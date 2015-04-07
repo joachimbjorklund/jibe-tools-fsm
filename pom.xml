@@ -5,12 +5,11 @@
 
     <groupId>jibe</groupId>
     <artifactId>jibe-tools-fsm</artifactId>
-    <version>0.9.2-SNAPSHOT</version>
+    <version>0.9.3-SNAPSHOT</version>
 
     <scm>
         <connection>scm:git:https://github.com/joachimbjorklund/jibe-tools-fsm.git</connection>
         <developerConnection>scm:git:https://github.com/joachimbjorklund/jibe-tools-fsm.git</developerConnection>
-        <tag>HEAD</tag>
     </scm>
 
     <properties>
