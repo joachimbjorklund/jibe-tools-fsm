@@ -9,7 +9,7 @@ Add Jibe Tools Fsm to your project. for maven projects just add this dependency:
 <dependency>
     <groupId>jibe</groupId>
     <artifactId>jibe-tools-fsm</artifactId>
-    <version>0.9.0</version>
+    <version>0.9.4</version>
 </dependency>
 ```
 And this repository:
