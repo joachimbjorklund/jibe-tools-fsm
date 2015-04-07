@@ -19,7 +19,6 @@ public class PhoneFSM {
 
     @State
     public class Ringing {
-
     }
 
 }

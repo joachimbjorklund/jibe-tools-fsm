@@ -5,7 +5,7 @@
 
     <groupId>jibe</groupId>
     <artifactId>jibe-tools-fsm</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>0.9.0-SNAPSHOT</version>
 
     <scm>
         <connection>scm:git:https://github.com/joachimbjorklund/jibe-tools-fsm.git</connection>
@@ -137,14 +137,21 @@
         </plugins>
     </build>
 
+    <repositories>
+        <repository>
+            <id>repository-jibe</id>
+            <url>http://nexus.jibe.nu/nexus/content/repositories/public</url>
+        </repository>
+    </repositories>
+
     <distributionManagement>
         <repository>
             <id>repository-jibe-releases</id>
-            <url>http://nexus-jibe.rhcloud.com/nexus/content/repositories/releases</url>
+            <url>http://nexus.jibe.nu/nexus/content/repositories/releases</url>
         </repository>
         <snapshotRepository>
             <id>repository-jibe-snapshots</id>
-            <url>http://nexus-jibe.rhcloud.com/nexus/content/repositories/snapshots/</url>
+            <url>http://nexus.jibe.nu/nexus/content/repositories/snapshots/</url>
         </snapshotRepository>
     </distributionManagement>
 </project>
