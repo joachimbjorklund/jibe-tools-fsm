@@ -1,6 +1,5 @@
 package jibe.tools.fsm.core;
 
-import com.google.common.base.Converter;
 import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.base.Predicate;
@@ -13,6 +12,7 @@ import jibe.tools.fsm.annotations.State;
 import jibe.tools.fsm.annotations.StateMachine;
 import jibe.tools.fsm.annotations.Transition;
 import jibe.tools.fsm.api.ActionType;
+import jibe.tools.fsm.api.Engine;
 import org.reflections.Reflections;
 import org.reflections.scanners.FieldAnnotationsScanner;
 import org.reflections.scanners.MethodAnnotationsScanner;
@@ -23,7 +23,6 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.lang.annotation.Annotation;
-import java.lang.reflect.AnnotatedElement;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -48,24 +47,14 @@ public class EngineHelper {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(EngineHelper.class);
 
-    private static final Converter<Class<?>, AnnotatedElement> CLASS_AE_CONVERTER = new Converter<Class<?>, AnnotatedElement>() {
-        @Override
-        protected AnnotatedElement doForward(Class<?> aClass) {
-            return aClass;
-        }
-
-        @Override
-        protected Class<?> doBackward(AnnotatedElement annotatedElement) {
-            return (Class<?>) annotatedElement;
-        }
-    };
-
+    private final Engine engine;
     private final Object fsm;
     private final Reflections reflections;
     private final HashMap<Class<?>, StateDefinition> stateMap = new HashMap<>();
 
-    public EngineHelper(Object fsm) {
-        this.fsm = fsm;
+    public EngineHelper(Engine engine) {
+        this.engine = engine;
+        this.fsm = engine.fsm();
         reflections = setupReflections();
         try {
             setupStatesAndFields();
@@ -215,87 +204,6 @@ public class EngineHelper {
         };
     }
 
-    //    Optional<Object> findState(Object fsm, Class<? extends Annotation> annotationType)
-    //            throws IllegalAccessException, InvocationTargetException, InstantiationException, NoSuchMethodException {
-    //        for (final Class c : getAnnotatedWith(Class.class, annotationType)) {
-    //            try {
-    //                stateMap.put(c, c.getDeclaredConstructor(fsm.getClass()).newInstance(fsm));
-    //            } catch (NoSuchMethodException e) {
-    //                try {
-    //                    stateMap.put(c, c.getDeclaredConstructor().newInstance());
-    //                } catch (NoSuchMethodException e1) {
-    //                    return Optional.absent();
-    //                }
-    //            }
-    //        }
-    //
-    //        for (final Method m : getAnnotatedWith(Method.class, annotationType)) {
-    //            Class<?> returnType = m.getReturnType();
-    //            if (stateMap.containsKey(returnType)) {
-    //                continue;
-    //            }
-    //            if (!m.getDeclaringClass().equals(fsm.getClass())) {
-    //                continue;
-    //            }
-    //            Class<?>[] parameterTypes = m.getParameterTypes();
-    //            if (parameterTypes.length == 0) {
-    //                stateMap.put(returnType, m.invoke(fsm));
-    //            } else if (parameterTypes.length == 1 && parameterTypes[0].equals(fsm.getClass())) {
-    //                stateMap.put(parameterTypes[0], m.invoke(fsm, fsm));
-    //            } else {
-    //                throw new RuntimeException("dont know how to invoke: " + m);
-    //            }
-    //        }
-    //
-    //        for (final Field f : getAnnotatedWith(Field.class, annotationType)) {
-    //            if (!f.getDeclaringClass().equals(fsm.getClass())) {
-    //                continue;
-    //            }
-    //            f.setAccessible(true);
-    //            Object startState = f.get(fsm);
-    //            if (startState != null) {
-    //                if (!stateMap.containsKey(startState.getClass())) {
-    //                    stateMap.put(startState.getClass(), startState);
-    //                }
-    //            } else if (stateMap.containsKey(f.getType())) {
-    //                f.set(fsm, stateMap.get(f.getType()));
-    //            } else {
-    //                Set<? extends Class<?>> all = getAll(newHashSet(f.getType()));
-    //                if (all.size() == 1) {
-    //                    Class<?> next = all.iterator().next();
-    //                    try {
-    //                        stateMap.put(f.getType(), next.getDeclaredConstructor(fsm.getClass()).newInstance(fsm));
-    //                    } catch (NoSuchMethodException e) {
-    //                        try {
-    //                            stateMap.put(f.getType(), next.getDeclaredConstructor().newInstance());
-    //                        } catch (NoSuchMethodException e1) {
-    //                            throw e1;
-    //                        }
-    //                    }
-    //                    f.set(fsm, stateMap.get(f.getType()));
-    //                }
-    //            }
-    //        }
-    //
-    //        if (stateMap.isEmpty()) {
-    //            return Optional.absent();
-    //        }
-    //
-    //        if (stateMap.size() == 1) {
-    //            return Optional.of(stateMap.values().iterator().next());
-    //        }
-    //
-    //        Set<Class<?>> classes = newHashSet(CLASS_AE_CONVERTER.reverse()
-    //                .convertAll(filterAnnotations(fsm, StartState.class, CLASS_AE_CONVERTER.convertAll(stateMap.keySet()))));
-    //        LOGGER.debug(String.format("classes: %s", classes));
-    //
-    //        if (classes.size() == 1) {
-    //            return Optional.of(stateMap.get(classes.iterator().next()));
-    //        }
-    //
-    //        throw new RuntimeException("ambiguous start stateMap: " + stateMap.values());
-    //    }
-
     private <T> Set<T> getAnnotatedWith(Class<T> type, Class<? extends Annotation> annotation) {
         if (type.equals(Field.class)) {
             return (Set<T>) reflections.getFieldsAnnotatedWith(annotation);
@@ -308,48 +216,6 @@ public class EngineHelper {
         }
         throw new RuntimeException("unknown type: " + type);
     }
-
-    //    private Set<AnnotatedElement> filterAnnotations(Object fsm, Class<? extends Annotation> type, Iterable<AnnotatedElement> search) {
-    //        Set<AnnotatedElement> answer = new HashSet<>();
-    //        for (AnnotatedElement annotated : search) {
-    //            Annotation annotation = annotated.getAnnotation(type);
-    //            Set<Method> fsmMeth = new HashSet<>();
-    //            if (annotation != null) {
-    //                fsmMeth = ReflectionUtils.getMethods(annotation.getClass(), new Predicate<Method>() {
-    //                    @Override
-    //                    public boolean apply(@Nullable Method input) {
-    //                        return input.getName().equals("fsm") && (input.getParameterTypes().length == 0);
-    //                    }
-    //                });
-    //            }
-    //
-    //            String belongTo = null;
-    //            if (fsmMeth.size() == 1) {
-    //                try {
-    //                    belongTo = (String) fsmMeth.iterator().next().invoke(annotation);
-    //                } catch (Exception e) {
-    //                    throw Throwables.propagate(e);
-    //                }
-    //            }
-    //
-    //            if (!Strings.isNullOrEmpty(belongTo)) {
-    //                if (getFsmName(fsm).equals(belongTo)) {
-    //                    answer.add(annotated);
-    //                }
-    //            } else {
-    //                Class<?> declaringClass;
-    //                if (annotated instanceof Member) {
-    //                    declaringClass = ((Member) annotated).getDeclaringClass();
-    //                } else {
-    //                    declaringClass = ((Class) annotated).getDeclaringClass();
-    //                }
-    //                if ((declaringClass != null) && (declaringClass.equals(fsm.getClass()) || declaringClass.isAssignableFrom(fsm.getClass()))) {
-    //                    answer.add(annotated);
-    //                }
-    //            }
-    //        }
-    //        return answer;
-    //    }
 
     private String getFsmName(Object fsm) {
         StateMachine annotation = fsm.getClass().getAnnotation(StateMachine.class);
