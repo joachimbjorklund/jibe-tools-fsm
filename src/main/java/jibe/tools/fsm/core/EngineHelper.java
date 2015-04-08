@@ -10,6 +10,7 @@ import jibe.tools.fsm.annotations.Action;
 import jibe.tools.fsm.annotations.StartState;
 import jibe.tools.fsm.annotations.State;
 import jibe.tools.fsm.annotations.StateMachine;
+import jibe.tools.fsm.annotations.TimerEvent;
 import jibe.tools.fsm.annotations.Transition;
 import jibe.tools.fsm.api.ActionType;
 import jibe.tools.fsm.api.Engine;
@@ -23,6 +24,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.lang.annotation.Annotation;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -33,9 +35,9 @@ import java.util.Set;
 import static com.google.common.collect.Iterables.filter;
 import static com.google.common.collect.Iterables.transform;
 import static com.google.common.collect.Sets.newHashSet;
-import static jibe.tools.fsm.core.EngineHelper.StateDefinition.StateType.START_STATE;
-import static jibe.tools.fsm.core.EngineHelper.StateDefinition.StateType.STATE;
-import static org.reflections.ReflectionUtils.getAll;
+import static jibe.tools.fsm.core.EngineHelper.TypeDefinition.Type.START_STATE;
+import static jibe.tools.fsm.core.EngineHelper.TypeDefinition.Type.STATE;
+import static jibe.tools.fsm.core.EngineHelper.TypeDefinition.Type.TIMER_EVENT;
 import static org.reflections.ReflectionUtils.getAllMethods;
 import static org.reflections.ReflectionUtils.withAnnotation;
 import static org.reflections.ReflectionUtils.withParameters;
@@ -50,22 +52,42 @@ public class EngineHelper {
     private final Engine engine;
     private final Object fsm;
     private final Reflections reflections;
-    private final HashMap<Class<?>, StateDefinition> stateMap = new HashMap<>();
+    private final HashMap<Class<?>, TypeDefinition> typeMap = new HashMap<>();
 
     public EngineHelper(Engine engine) {
         this.engine = engine;
-        this.fsm = engine.fsm();
+        this.fsm = engine.getFsm();
         reflections = setupReflections();
         try {
-            setupStatesAndFields();
+            scanStatesAndFields();
+            scanTimers();
         } catch (Exception e) {
             throw Throwables.propagate(e);
         }
     }
 
+    public Set<Object> getTimerEvents() {
+        return newHashSet(transform(filter(filter(typeMap.values(), withType(TIMER_EVENT)), matchingFsmName()), toObj()));
+    }
+
+    private Predicate<TypeDefinition> matchingFsmName() {
+        return new Predicate<TypeDefinition>() {
+            @Override
+            public boolean apply(@Nullable TypeDefinition input) {
+                String fsmName = getFsmNameFromAnnotation(input.obj, TimerEvent.class);
+                return Strings.isNullOrEmpty(fsmName) || getFsmName(fsm).equals(fsmName);
+            }
+        };
+    }
+
     public Optional<Object> findState(Class<?> stateClass) {
         Set<Object> states =
-                newHashSet(transform(filter(stateMap.values(), withTypeAndClass(STATE, stateClass)), toState()));
+                newHashSet(transform(filter(typeMap.values(), withTypeAndClass(STATE, stateClass)), toObj()));
+        if (states.iterator().hasNext()) {
+            return Optional.of(states.iterator().next());
+        }
+
+        states = newHashSet(transform(filter(typeMap.values(), withTypeAndClass(START_STATE, stateClass)), toObj()));
         if (states.iterator().hasNext()) {
             return Optional.of(states.iterator().next());
         }
@@ -73,16 +95,20 @@ public class EngineHelper {
         return Optional.absent();
     }
 
-    Optional<Object> findStartState() {
-        Set<Object> startStates =
-                newHashSet(transform(filter(stateMap.values(), withType(START_STATE)), toState()));
+    Optional<Set<Object>> findStartState() {
+        Set<Object> startStates = newHashSet(transform(filter(typeMap.values(), withType(START_STATE)), toObj()));
 
         if (startStates.isEmpty()) {
             return Optional.absent();
         }
 
         if (startStates.size() == 1) {
-            return Optional.of(startStates.iterator().next());
+            Object startState = startStates.iterator().next();
+            String fsmName = getFsmNameFromAnnotation(startState, StartState.class);
+            if (Strings.isNullOrEmpty(fsmName) || getFsmName(fsm).equals(fsmName)) {
+                return Optional.<Set<Object>>of(newHashSet(startState));
+            }
+            return Optional.absent();
         }
 
         Set<Object> filtered = newHashSet(filter(startStates, new Predicate<Object>() {
@@ -97,10 +123,10 @@ public class EngineHelper {
         }
 
         if (filtered.size() == 1) {
-            return Optional.of(filtered.iterator().next());
+            return Optional.<Set<Object>>of(newHashSet(filtered.iterator().next()));
         }
 
-        throw new RuntimeException("ambiguous startStates: " + startStates);
+        return Optional.of(filtered);
     }
 
     private String getFsmNameFromAnnotation(Object input, Class<? extends Annotation> annotationClass) {
@@ -118,11 +144,32 @@ public class EngineHelper {
             }
             return annotation.fsm();
         }
+        if (annotationClass.equals(TimerEvent.class)) {
+            TimerEvent annotation = input.getClass().getAnnotation((Class<TimerEvent>) annotationClass);
+            if (annotation == null) {
+                throw new RuntimeException("shouldn't input: " + input + ", have annotation: " + annotationClass);
+            }
+            return annotation.fsm();
+        }
         throw new RuntimeException("don't know: " + annotationClass);
     }
 
-    private void setupStatesAndFields() throws NoSuchMethodException, IllegalAccessException, InvocationTargetException, InstantiationException {
-        if (!stateMap.isEmpty()) {
+    private void scanTimers() throws IllegalAccessException, InvocationTargetException, InstantiationException, NoSuchMethodException {
+        for (Class c : getAnnotatedWith(Class.class, TimerEvent.class)) {
+            try {
+                Constructor declaredConstructor = c.getDeclaredConstructor(fsm.getClass());
+                declaredConstructor.setAccessible(true);
+                typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(fsm), TimerEvent.class));
+            } catch (NoSuchMethodException e) {
+                Constructor declaredConstructor = c.getDeclaredConstructor();
+                declaredConstructor.setAccessible(true);
+                typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(), TimerEvent.class));
+            }
+        }
+    }
+
+    private void scanStatesAndFields() throws NoSuchMethodException, IllegalAccessException, InvocationTargetException, InstantiationException {
+        if (!typeMap.isEmpty()) {
             return;
         }
         for (Class<? extends Annotation> stateAnnotation : newHashSet(StartState.class, State.class)) {
@@ -131,15 +178,19 @@ public class EngineHelper {
 
                 }
                 try {
-                    stateMap.put(c, new StateDefinition(c.getDeclaredConstructor(fsm.getClass()).newInstance(fsm), stateAnnotation));
+                    Constructor declaredConstructor = c.getDeclaredConstructor(fsm.getClass());
+                    declaredConstructor.setAccessible(true);
+                    typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(fsm), stateAnnotation));
                 } catch (NoSuchMethodException e) {
-                    stateMap.put(c, new StateDefinition(c.getDeclaredConstructor().newInstance(), stateAnnotation));
+                    Constructor declaredConstructor = c.getDeclaredConstructor();
+                    declaredConstructor.setAccessible(true);
+                    typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(), stateAnnotation));
                 }
             }
 
             for (final Method m : getAnnotatedWith(Method.class, stateAnnotation)) {
                 Class<?> returnType = m.getReturnType();
-                if (stateMap.containsKey(returnType)) {
+                if (typeMap.containsKey(returnType)) {
                     continue;
                 }
 
@@ -149,9 +200,9 @@ public class EngineHelper {
                 }
                 Class<?>[] parameterTypes = m.getParameterTypes();
                 if (parameterTypes.length == 0) {
-                    stateMap.put(returnType, new StateDefinition(m.invoke(fsm), stateAnnotation));
+                    typeMap.put(returnType, new TypeDefinition(m.invoke(fsm), stateAnnotation));
                 } else if ((parameterTypes.length == 1) && parameterTypes[0].equals(fsm.getClass())) {
-                    stateMap.put(parameterTypes[0], new StateDefinition(m.invoke(fsm, fsm), stateAnnotation));
+                    typeMap.put(parameterTypes[0], new TypeDefinition(m.invoke(fsm, fsm), stateAnnotation));
                 } else {
                     throw new RuntimeException("unknown parameters for state constructing method: " + m);
                 }
@@ -163,43 +214,43 @@ public class EngineHelper {
                     continue;
                 }
 
-                if (!stateMap.containsKey(f.getType())) {
+                if (!typeMap.containsKey(f.getType())) {
                     throw new RuntimeException("type of field: " + f + " does not constitute a known state");
                 }
 
                 f.setAccessible(true);
                 Object state = f.get(fsm);
                 if (state != null) {
-                    LOGGER.warn("overwriting field: " + f + " with: " + stateMap.get(f.getType()));
+                    LOGGER.warn("overwriting field: " + f + " with: " + typeMap.get(f.getType()));
                 }
-                f.set(fsm, stateMap.get(f.getType()).state);
+                f.set(fsm, typeMap.get(f.getType()).obj);
             }
         }
     }
 
-    private Function<StateDefinition, Object> toState() {
-        return new Function<StateDefinition, Object>() {
+    private Function<TypeDefinition, Object> toObj() {
+        return new Function<TypeDefinition, Object>() {
             @Override
-            public Object apply(StateDefinition input) {
-                return input.state;
+            public Object apply(TypeDefinition input) {
+                return input.obj;
             }
         };
     }
 
-    private Predicate<StateDefinition> withType(final StateDefinition.StateType stateType) {
-        return new Predicate<StateDefinition>() {
+    private Predicate<TypeDefinition> withType(final TypeDefinition.Type type) {
+        return new Predicate<TypeDefinition>() {
             @Override
-            public boolean apply(StateDefinition input) {
-                return input.stateType == stateType;
+            public boolean apply(TypeDefinition input) {
+                return input.type == type;
             }
         };
     }
 
-    private Predicate<StateDefinition> withTypeAndClass(final StateDefinition.StateType stateType, final Class<?> clazz) {
-        return new Predicate<StateDefinition>() {
+    private Predicate<TypeDefinition> withTypeAndClass(final TypeDefinition.Type type, final Class<?> clazz) {
+        return new Predicate<TypeDefinition>() {
             @Override
-            public boolean apply(StateDefinition input) {
-                return (input.stateType == stateType) && input.state.getClass().equals(clazz);
+            public boolean apply(TypeDefinition input) {
+                return (input.type == type) && input.obj.getClass().equals(clazz);
             }
         };
     }
@@ -260,36 +311,37 @@ public class EngineHelper {
         return answer;
     }
 
-    public Optional<Method> findTransitionForEvent(Object state, Object event) {
+    public Optional<Set<Method>> findTransitionForEvent(Object state, Object event) {
         Set<Method> transitions = getAllMethods(state.getClass(), withAnnotation(Transition.class), withParameters(event.getClass()));
         if (transitions.isEmpty()) {
             return Optional.absent();
         } else if (transitions.size() > 1) {
-            throw new RuntimeException("ambiguous transitions for event: " + event.getClass() + " state: " + state.getClass());
+            return Optional.of(transitions);
         } else {
             final Method transition = transitions.iterator().next();
-            Set<Class<?>> foundStates = getAll(reflections.getTypesAnnotatedWith(State.class), new Predicate<Class<?>>() {
-                @Override
-                public boolean apply(@Nullable Class<?> input) {
-                    return input.equals(transition.getReturnType());
-                }
-            });
-            if (foundStates.size() != 1) {
-                throw new RuntimeException("transition found but not returning a @State annotated object");
+            TypeDefinition stateDefinition = typeMap.get(transition.getReturnType());
+            if (stateDefinition == null) {
+                return Optional.absent();
             }
-            return Optional.of(transition);
+            return Optional.<Set<Method>>of(newHashSet(transition));
         }
     }
 
-    public Set<Method> findOnExit(Object state) {
-        Set<Method> methods = getAllMethods(state.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnExit), withParameters());
-        methods.addAll(getAllMethods(state.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnExit), withParameters(fsm.getClass())));
+    public Set<Method> findActionImplied(Object obj) {
+        Set<Method> methods = getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.Implied), withParameters());
+        methods.addAll(getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.Implied), withParameters(fsm.getClass())));
         return methods;
     }
 
-    public Set<Method> findOnEnter(Object state) {
-        Set<Method> methods = getAllMethods(state.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnEnter), withParameters());
-        methods.addAll(getAllMethods(state.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnEnter), withParameters(fsm.getClass())));
+    public Set<Method> findActionOnExit(Object obj) {
+        Set<Method> methods = getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnExit), withParameters());
+        methods.addAll(getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnExit), withParameters(fsm.getClass())));
+        return methods;
+    }
+
+    public Set<Method> findActionOnEnter(Object obj) {
+        Set<Method> methods = getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnEnter), withParameters());
+        methods.addAll(getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnEnter), withParameters(fsm.getClass())));
         return methods;
     }
 
@@ -302,33 +354,37 @@ public class EngineHelper {
         };
     }
 
-    static class StateDefinition {
-        private final StateType stateType;
-        private final Object state;
+    static class TypeDefinition {
+        private final Type type;
+        private final Object obj;
 
-        private StateDefinition(Object state, Class<? extends Annotation> stateAnnotation) {
-            this.stateType = StateType.from(stateAnnotation);
-            this.state = state;
+        private TypeDefinition(Object obj, Class<? extends Annotation> stateAnnotation) {
+            this.type = Type.from(stateAnnotation);
+            this.obj = obj;
         }
 
         @Override
         public String toString() {
             return "StateDefinition{" +
-                    "state=" + state +
-                    ", stateType=" + stateType +
+                    "obj=" + obj +
+                    ", type=" + type +
                     '}';
         }
 
-        enum StateType {
+        enum Type {
             START_STATE,
-            STATE;
+            STATE,
+            TIMER_EVENT;
 
-            public static StateType from(Class<? extends Annotation> annotationType) {
+            public static Type from(Class<? extends Annotation> annotationType) {
                 if (annotationType.equals(State.class)) {
-                    return StateType.STATE;
+                    return Type.STATE;
                 }
                 if (annotationType.equals(StartState.class)) {
-                    return StateType.START_STATE;
+                    return Type.START_STATE;
+                }
+                if (annotationType.equals(TimerEvent.class)) {
+                    return Type.TIMER_EVENT;
                 }
                 throw new RuntimeException("unknown annotationType: " + annotationType);
             }

@@ -1,35 +1,3 @@
-# Jibe Tools Fsm
-
-## Annotation-driven StateMachine (FSM)
-With annotations you define your state-machine. No interfaces to implement... Just plain Java...
-
-###Install
-Add Jibe Tools Fsm to your project. for maven projects just add this dependency:
-```xml
-<dependency>
-    <groupId>jibe</groupId>
-    <artifactId>jibe-tools-fsm</artifactId>
-    <version>0.9.5</version>
-</dependency>
-```
-And this repository:
-```xml
-<repositories>
-  <repository>
-    <id>repository-jibe</id>
-      <url>http://nexus.jibe.nu/nexus/content/repositories/public</url>
-  </repository>
-</repositories>
-```
-Or clone with
-```
-git clone https://github.com/joachimbjorklund/jibe-tools-fsm.git
-```
-And build it your self... (much more fun)
-
-###Usage
-This should get you started...:
-```java
 package jibe.tools.fsm.api.test.trafficlight;
 
 import jibe.tools.fsm.annotations.Action;
@@ -60,6 +28,13 @@ public class TrafficLightFSM {
     private static final int GREEN_MAX = 5;
 
     private LocalDateTime wentOn;
+
+    public static void main(String[] args) throws InterruptedException {
+
+        TrafficLightFSM fsm = new TrafficLightFSM();
+        Engine engine = EngineFactory.newInstance().newEngine(fsm);
+        engine.start();
+    }
 
     @StartState
     private class Red {
@@ -142,17 +117,4 @@ public class TrafficLightFSM {
             triggeredAt = LocalDateTime.now();
         }
     }
-
-    public static void main(String[] args) throws InterruptedException {
-
-        TrafficLightFSM fsm = new TrafficLightFSM();
-        Engine engine = EngineFactory.newInstance().newEngine(fsm);
-        engine.start();
-    }
 }
-
-```
-
-That's all folks!
-
-_Cheers_

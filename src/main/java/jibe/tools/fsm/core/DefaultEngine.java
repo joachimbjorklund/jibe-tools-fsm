@@ -3,28 +3,27 @@ package jibe.tools.fsm.core;
 import com.google.common.base.Optional;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.AbstractExecutionThreadService;
+import jibe.tools.fsm.annotations.TimerEvent;
 import jibe.tools.fsm.api.Context;
 import jibe.tools.fsm.api.Engine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Method;
-import java.util.HashSet;
-import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.Callable;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-import static com.google.common.util.concurrent.MoreExecutors.getExitingExecutorService;
 import static com.google.common.util.concurrent.MoreExecutors.platformThreadFactory;
+import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newFixedThreadPool;
+import static java.util.concurrent.Executors.newScheduledThreadPool;
 
 /**
  *
@@ -34,9 +33,10 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
     private final Configuration configuration;
     private final Object fsm;
     private ExecutorService executorService;
+    private ScheduledExecutorService scheduledExecutorService;
     private DefaultContext context;
     private EngineHelper helper;
-    private ArrayBlockingQueue<Object> queue;
+    private BlockingQueue<Object> queue;
     private ThreadFactory threadFactory;
 
     private CountDownLatch startLatch = new CountDownLatch(1);
@@ -59,34 +59,67 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
     private void configure(Configuration configuration) {
         helper = new EngineHelper(this);
         context = new DefaultContext();
-        queue = new ArrayBlockingQueue<>(configuration.getQueueSize());
+        queue = new LinkedBlockingQueue<>(configuration.getQueueSize());
         threadFactory = configuration.getThreadFactory();
         executorService = configuration.getExecutorService();
+        scheduledExecutorService = configuration.getScheduledExecutorService();
     }
 
-    @Override
-    public Context context() {
-        return context;
-    }
+    //    @Override
+    //    public Context context() {
+    //        return context;
+    //    }
 
     @Override
-    public Object currentState() {
+    public Optional<Object> getCurrentState() {
         synchronized (context) {
             return context.currentState;
         }
     }
 
     @Override
-    public Object fsm() {
+    public Optional<Object> getPreviousState() {
+        return context.previousState;
+    }
+
+    private void timerAtFixedRate(final Object timerEvent, long delay, long period, TimeUnit timeUnit) {
+        scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
+            @Override
+            public void run() {
+                if (isRunning() && getCurrentState().isPresent()) {
+                    event(timerEvent);
+                }
+            }
+        }, delay, period, timeUnit);
+    }
+
+    private void timerAt(final Object timerEvent, long delay, TimeUnit timeUnit) {
+        scheduledExecutorService.schedule(new Runnable() {
+            @Override
+            public void run() {
+                if (isRunning() && getCurrentState().isPresent()) {
+                    event(timerEvent);
+                }
+            }
+        }, delay, timeUnit);
+    }
+
+    @Override
+    public Object getFsm() {
         return fsm;
     }
 
     @Override
     public Engine start() {
+        LOGGER.debug("start");
         Engine engine = (Engine) startAsync();
         engine.awaitRunning();
+        LOGGER.debug("service running");
         try {
-            startLatch.await();
+            boolean await = startLatch.await(2, TimeUnit.SECONDS);
+            if (!await) {
+                throw new RuntimeException("not started in time");
+            }
         } catch (Exception e) {
             throw Throwables.propagate(e);
         }
@@ -106,104 +139,118 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
             throw new IllegalStateException("not running");
         }
         try {
-            offer(event);
+            queue(event);
         } catch (Exception e) {
             throw Throwables.propagate(e);
         }
     }
 
     private void fire(Object event) {
-        LOGGER.debug(String.format("fire event: %s", event));
         synchronized (context) {
             if (ServiceEvent.START == event) {
-                Optional<Object> startState = helper.findStartState();
-                if (!startState.isPresent()) {
-                    try {
-                        stop();
-                    } finally {
-                        throw new RuntimeException("no start-state found");
-                    }
-                }
-                executeOnEnter(startState.get());
-                context.currentState = startState.get();
-                LOGGER.debug("currentState: " + startState.get());
                 startLatch.countDown();
+
+                Optional<Set<Object>> startStates = helper.findStartState();
+                int foundNbrStartStates = startStates.isPresent() ? startStates.get().size() : 0;
+                if (foundNbrStartStates != 1) {
+                    if (foundNbrStartStates == 0) {
+                        LOGGER.error("no start-state found");
+                    } else {
+                        LOGGER.error("to many start-states found: " + startStates.get());
+                    }
+                    triggerShutdown();
+                    return;
+                }
+
+                Object startState = startStates.get().iterator().next();
+
+                executeActionImplied(startState);
+                executeActionOnEnter(startState);
+                context.currentState = Optional.of(startState);
                 return;
             }
 
-            Optional<Method> foundTransition = helper.findTransitionForEvent(context.currentState, event);
-            if (!foundTransition.isPresent()) {
-                LOGGER.info("transition not found for event: " + event + ", current: " + context.currentState);
+            executeActionImplied(event);
+
+            Object currentState = context.currentState.get();
+            Optional<Set<Method>> foundTransitions = helper.findTransitionForEvent(currentState, event);
+            if (!foundTransitions.isPresent()) {
+                LOGGER.warn("transition not found for event: " + event + ", current: " + currentState);
+                return;
+            }
+            if (foundTransitions.get().size() > 1) {
+                LOGGER.error("to many transitions found: " + foundTransitions.get());
+                triggerShutdown();
                 return;
             }
 
-            Method transitionMethod = foundTransition.get();
+            Method transitionMethod = foundTransitions.get().iterator().next();
             Optional<Object> foundToState = helper.findState(transitionMethod.getReturnType());
             if (!foundToState.isPresent()) {
-                throw new RuntimeException("transition returns something that is not a known @State");
+                throw new RuntimeException("transition returns something that is not a known state");
             }
 
             try {
-                Object result = transitionMethod.invoke(context.currentState, event);
+                transitionMethod.setAccessible(true);
+                Object result = transitionMethod.invoke(currentState, event);
                 if (result == null) {
                     return;
                 }
-                executeOnExit(context.currentState);
-                context.currentState = foundToState.get(); // we are not replacing anything
+
+                executeActionImplied(currentState);
+                executeActionOnExit(currentState);
+
+                currentState = result;
+
+                context.previousState = context.currentState;
+                context.currentState = Optional.of(result);
             } catch (Exception e) {
                 throw Throwables.propagate(e);
             }
-            executeOnEnter(context.currentState);
+            executeActionImplied(currentState);
+            executeActionOnEnter(currentState);
         }
     }
 
     @Override
-    public Configuration configuration() {
+    public Configuration getConfiguration() {
         return configuration;
     }
 
-    private Future<?> invokeAsync(final Method method, final Object holder, final Object... args) {
-        return executorService.submit(new Callable<Object>() {
-            @Override
-            public Object call() throws Exception {
-                return method.invoke(holder, args);
-            }
-        });
-    }
-
-    private Set<Future<?>> executeOnEnter(Object state) {
-        Set<Future<?>> futures = new HashSet<>();
-        for (Method m : helper.findOnEnter(state)) {
-            executeAction(state, m);
+    private void executeActionImplied(Object obj) {
+        for (Method m : helper.findActionImplied(obj)) {
+            executeAction(obj, m);
         }
-        return futures;
     }
 
-    private Set<Future<?>> executeOnExit(Object state) {
-        Set<Future<?>> futures = new HashSet<>();
-        for (Method m : helper.findOnExit(state)) {
-            executeAction(state, m);
+    private void executeActionOnEnter(Object obj) {
+        for (Method m : helper.findActionOnEnter(obj)) {
+            executeAction(obj, m);
         }
-        return futures;
     }
 
-    private Optional<Future<?>> executeAction(Object state, Method m) {
+    private void executeActionOnExit(Object obj) {
+        for (Method m : helper.findActionOnExit(obj)) {
+            executeAction(obj, m);
+        }
+    }
+
+    private void executeAction(Object obj, Method m) {
         Class<?> returnType = m.getReturnType();
-        if (!returnType.equals(Void.TYPE) && !Future.class.isAssignableFrom(returnType)) {
+        if (!returnType.equals(Void.TYPE)) {
             LOGGER.warn("invoking Action with return-type: " + returnType + ". I don't know what to do with it...");
         }
 
         try {
+            m.setAccessible(true);
             if (m.getParameterTypes().length == 1) {
-                Object invoke = m.invoke(state, fsm);
+                m.invoke(obj, fsm);
             } else {
-                Object invoke = m.invoke(state);
+                m.invoke(obj);
             }
         } catch (Exception e) {
             throw Throwables.propagate(e);
         }
-
-        return Optional.absent(); // TODO:
     }
 
     @Override
@@ -213,18 +260,40 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
 
     @Override
     protected void shutDown() throws Exception {
-        LOGGER.debug("shutDown");
+        LOGGER.info("shutDown");
+        executorService.shutdownNow();
+        scheduledExecutorService.shutdownNow();
+        LOGGER.debug("executorServices is now shutdown");
     }
 
     @Override
     protected void startUp() throws Exception {
-        LOGGER.debug("startUp");
-        offer(ServiceEvent.START);
+        LOGGER.info("startUp");
+        scheduleTimers(helper.getTimerEvents());
+        queue(ServiceEvent.START);
     }
 
-    private void offer(Object event) {
+    private void scheduleTimers(Set<Object> timerEvents) {
+        for (Object timerEvent : timerEvents) {
+            TimerEvent annotation = timerEvent.getClass().getAnnotation(TimerEvent.class);
+            switch (annotation.type()) {
+            case ScheduledFixedRateTimer:
+                timerAtFixedRate(timerEvent, annotation.delay(), annotation.period(), annotation.timeUnit());
+                break;
+            case ScheduledFixedDelayTimer:
+                throw new RuntimeException("not implemented yet...");
+            case ScheduledTimer:
+                timerAt(timerEvent, annotation.delay(), annotation.timeUnit());
+                break;
+            default:
+                throw new RuntimeException("unknown timer type...");
+            }
+        }
+    }
+
+    private void queue(Object event) {
         try {
-            queue.offer(event, 1, TimeUnit.SECONDS);
+            queue.add(event);
         } catch (Exception e) {
             throw Throwables.propagate(e);
         }
@@ -232,8 +301,8 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
 
     @Override
     protected void triggerShutdown() {
-        LOGGER.debug("triggerShutdown");
-        offer(ServiceEvent.STOP);
+        LOGGER.info("triggerShutdown");
+        queue(ServiceEvent.STOP);
     }
 
     @Override
@@ -242,8 +311,12 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
             Object event = queue.take();
             if (ServiceEvent.STOP != event) {
                 fire(event);
+            } else {
+                LOGGER.debug("Leaving main-loop");
+                return;
             }
         }
+        LOGGER.debug("Leaving main-loop");
     }
 
     private enum ServiceEvent {
@@ -251,6 +324,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
         STOP
     }
 
+    @SuppressWarnings("unused")
     public static class ConfigurationBuilder {
         private final DefaultConfiguration configuration = new DefaultConfiguration();
 
@@ -287,13 +361,15 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
     private static class DefaultConfiguration implements Configuration {
         private ThreadFactory threadFactory;
         private ExecutorService executorService;
+        private ScheduledExecutorService scheduledExecutorService;
         private int queueSize;
         private long actionTimeoutMills;
         private long transitionTimeoutMills;
 
         private DefaultConfiguration() {
             threadFactory = platformThreadFactory();
-            executorService = getExitingExecutorService((ThreadPoolExecutor) newFixedThreadPool(10, threadFactory));
+            executorService = newFixedThreadPool(10, threadFactory);
+            scheduledExecutorService = newScheduledThreadPool(10, threadFactory);
             queueSize = 1024;
             actionTimeoutMills = 1000;
             transitionTimeoutMills = 1000;
@@ -317,6 +393,16 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
                 setThreadFactory(threadFactory);
             }
 
+            ExecutorService executorService = configuration.getExecutorService();
+            if (executorService != null) {
+                setExecutorService(executorService);
+            }
+
+            ScheduledExecutorService scheduledExecutorService = configuration.getScheduledExecutorService();
+            if (scheduledExecutorService != null) {
+                setScheduledExecutorService(scheduledExecutorService);
+            }
+
             return this;
         }
 
@@ -326,7 +412,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
         }
 
         public void setThreadFactory(ThreadFactory threadFactory) {
-            this.threadFactory = Objects.requireNonNull(threadFactory);
+            this.threadFactory = requireNonNull(threadFactory);
         }
 
         @Override
@@ -335,7 +421,16 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
         }
 
         public void setExecutorService(ExecutorService executorService) {
-            this.executorService = Objects.requireNonNull(executorService);
+            this.executorService = requireNonNull(executorService);
+        }
+
+        @Override
+        public ScheduledExecutorService getScheduledExecutorService() {
+            return scheduledExecutorService;
+        }
+
+        public void setScheduledExecutorService(ScheduledExecutorService scheduledExecutorService) {
+            this.scheduledExecutorService = requireNonNull(scheduledExecutorService);
         }
 
         @Override
@@ -377,9 +472,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
      *
      */
     private class DefaultContext implements Context {
-        private Object currentState;
-
-        public DefaultContext() {
-        }
+        private Optional<Object> currentState = Optional.absent();
+        private Optional<Object> previousState = Optional.absent();
     }
 }
