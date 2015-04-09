@@ -12,6 +12,7 @@ import jibe.tools.fsm.annotations.State;
 import jibe.tools.fsm.annotations.StateMachine;
 import jibe.tools.fsm.annotations.TimerEvent;
 import jibe.tools.fsm.annotations.Transition;
+import jibe.tools.fsm.annotations.TransitionOnTimeout;
 import jibe.tools.fsm.api.ActionType;
 import jibe.tools.fsm.api.Engine;
 import org.reflections.Reflections;
@@ -29,7 +30,6 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Set;
 
 import static com.google.common.collect.Iterables.filter;
@@ -54,33 +54,38 @@ public class EngineHelper {
     private final Reflections reflections;
     private final HashMap<Class<?>, TypeDefinition> typeMap = new HashMap<>();
 
-    public EngineHelper(Engine engine) {
+    EngineHelper(Engine engine) {
         this.engine = engine;
         this.fsm = engine.getFsm();
         reflections = setupReflections();
         try {
             scanStatesAndFields();
             scanTimers();
+            scanTimeouts();
         } catch (Exception e) {
             throw Throwables.propagate(e);
         }
     }
 
-    public Set<Object> getTimerEvents() {
-        return newHashSet(transform(filter(filter(typeMap.values(), withType(TIMER_EVENT)), matchingFsmName()), toObj()));
+    Set<Object> getTimerEvents() {
+        return newHashSet(transform(filter(filter(typeMap.values(), withType(TIMER_EVENT)), annotationMatchingMyFsm(TimerEvent.class)), toObj()));
     }
 
-    private Predicate<TypeDefinition> matchingFsmName() {
+    Set<TransitionOnTimeoutEvent> getTimeoutTransitions(Object state) {
+        return typeMap.get(state.getClass()).timeoutEvents;
+    }
+
+    private Predicate<TypeDefinition> annotationMatchingMyFsm(final Class<? extends Annotation> annotationClass) {
         return new Predicate<TypeDefinition>() {
             @Override
             public boolean apply(@Nullable TypeDefinition input) {
-                String fsmName = getFsmNameFromAnnotation(input.obj, TimerEvent.class);
+                String fsmName = getFsmNameFromAnnotation(input.obj, annotationClass);
                 return Strings.isNullOrEmpty(fsmName) || getFsmName(fsm).equals(fsmName);
             }
         };
     }
 
-    public Optional<Object> findState(Class<?> stateClass) {
+    Optional<Object> findState(Class<?> stateClass) {
         Set<Object> states =
                 newHashSet(transform(filter(typeMap.values(), withTypeAndClass(STATE, stateClass)), toObj()));
         if (states.iterator().hasNext()) {
@@ -168,15 +173,29 @@ public class EngineHelper {
         }
     }
 
+    private void scanTimeouts() throws IllegalAccessException, InvocationTargetException, InstantiationException, NoSuchMethodException {
+        for (Method m : getAnnotatedWith(Method.class, TransitionOnTimeout.class)) {
+            if (!typeMap.containsKey(m.getReturnType())) {
+                LOGGER.warn("timeout-annotated method: " + m + " does not transit to any known state");
+                continue;
+            }
+
+            if (!typeMap.containsKey(m.getDeclaringClass())) {
+                LOGGER.warn("timeout-annotated method: " + m + " is not declared in any known state");
+                continue;
+            }
+
+            TypeDefinition typeDefinition = typeMap.get(m.getDeclaringClass());
+            typeDefinition.addTimeout(new TransitionOnTimeoutEvent(m));
+        }
+    }
+
     private void scanStatesAndFields() throws NoSuchMethodException, IllegalAccessException, InvocationTargetException, InstantiationException {
         if (!typeMap.isEmpty()) {
-            return;
+            throw new IllegalStateException("already scanned....");
         }
         for (Class<? extends Annotation> stateAnnotation : newHashSet(StartState.class, State.class)) {
             for (final Class c : getAnnotatedWith(Class.class, stateAnnotation)) {
-                if ((c.getAnnotation(StartState.class) != null) && (c.getAnnotation(State.class) != null)) {
-
-                }
                 try {
                     Constructor declaredConstructor = c.getDeclaredConstructor(fsm.getClass());
                     declaredConstructor.setAccessible(true);
@@ -237,11 +256,12 @@ public class EngineHelper {
         };
     }
 
-    private Predicate<TypeDefinition> withType(final TypeDefinition.Type type) {
+    private Predicate<TypeDefinition> withType(final TypeDefinition.Type... types) {
+        final Set<TypeDefinition.Type> withTypes = newHashSet(types);
         return new Predicate<TypeDefinition>() {
             @Override
             public boolean apply(TypeDefinition input) {
-                return input.type == type;
+                return withTypes.contains(input.type);
             }
         };
     }
@@ -301,7 +321,7 @@ public class EngineHelper {
 
     private Set<String> getPackages(Object fsm) {
         StateMachine annotation = fsm.getClass().getAnnotation(StateMachine.class);
-        Set<String> answer = new HashSet<>();
+        Set<String> answer = newHashSet();
         if (annotation != null) {
             answer = newHashSet(annotation.pkgs());
         }
@@ -311,7 +331,7 @@ public class EngineHelper {
         return answer;
     }
 
-    public Optional<Set<Method>> findTransitionForEvent(Object state, Object event) {
+    Optional<Set<Method>> findTransitionForEvent(Object state, Object event) {
         Set<Method> transitions = getAllMethods(state.getClass(), withAnnotation(Transition.class), withParameters(event.getClass()));
         if (transitions.isEmpty()) {
             return Optional.absent();
@@ -327,19 +347,19 @@ public class EngineHelper {
         }
     }
 
-    public Set<Method> findActionImplied(Object obj) {
+    Set<Method> findActionImplied(Object obj) {
         Set<Method> methods = getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.Implied), withParameters());
         methods.addAll(getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.Implied), withParameters(fsm.getClass())));
         return methods;
     }
 
-    public Set<Method> findActionOnExit(Object obj) {
+    Set<Method> findActionOnExit(Object obj) {
         Set<Method> methods = getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnExit), withParameters());
         methods.addAll(getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnExit), withParameters(fsm.getClass())));
         return methods;
     }
 
-    public Set<Method> findActionOnEnter(Object obj) {
+    Set<Method> findActionOnEnter(Object obj) {
         Set<Method> methods = getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnEnter), withParameters());
         methods.addAll(getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnEnter), withParameters(fsm.getClass())));
         return methods;
@@ -357,6 +377,7 @@ public class EngineHelper {
     static class TypeDefinition {
         private final Type type;
         private final Object obj;
+        private final Set<TransitionOnTimeoutEvent> timeoutEvents = newHashSet();
 
         private TypeDefinition(Object obj, Class<? extends Annotation> stateAnnotation) {
             this.type = Type.from(stateAnnotation);
@@ -369,6 +390,10 @@ public class EngineHelper {
                     "obj=" + obj +
                     ", type=" + type +
                     '}';
+        }
+
+        public void addTimeout(TransitionOnTimeoutEvent transitionOnTimeoutEvent) {
+            timeoutEvents.add(transitionOnTimeoutEvent);
         }
 
         enum Type {

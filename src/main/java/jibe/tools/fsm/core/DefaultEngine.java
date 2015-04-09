@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Method;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
@@ -17,9 +18,12 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
+import static com.google.common.collect.Maps.newHashMap;
+import static com.google.common.collect.Sets.newHashSet;
 import static com.google.common.util.concurrent.MoreExecutors.platformThreadFactory;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newFixedThreadPool;
@@ -40,6 +44,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
     private ThreadFactory threadFactory;
 
     private CountDownLatch startLatch = new CountDownLatch(1);
+    private Map<Object, ScheduledFuture> scheduledFutures = newHashMap();
 
     DefaultEngine(Object fsm) {
         this(fsm, new DefaultConfiguration());
@@ -83,7 +88,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
     }
 
     private void timerAtFixedRate(final Object timerEvent, long delay, long period, TimeUnit timeUnit) {
-        scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
+        ScheduledFuture<?> scheduledFuture = scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
             @Override
             public void run() {
                 if (isRunning() && getCurrentState().isPresent()) {
@@ -91,10 +96,12 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
                 }
             }
         }, delay, period, timeUnit);
+
+        scheduledFutures.put(timerEvent, scheduledFuture);
     }
 
     private void timerAt(final Object timerEvent, long delay, TimeUnit timeUnit) {
-        scheduledExecutorService.schedule(new Runnable() {
+        ScheduledFuture<?> scheduledFuture = scheduledExecutorService.schedule(new Runnable() {
             @Override
             public void run() {
                 if (isRunning() && getCurrentState().isPresent()) {
@@ -102,6 +109,8 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
                 }
             }
         }, delay, timeUnit);
+
+        scheduledFutures.put(timerEvent, scheduledFuture);
     }
 
     @Override
@@ -167,15 +176,24 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
                 executeActionImplied(startState);
                 executeActionOnEnter(startState);
                 context.currentState = Optional.of(startState);
+
+                for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(context.currentState.get())) {
+                    timerAt(e, e.getPeriod(), e.getTimeUnit());
+                }
                 return;
             }
 
             executeActionImplied(event);
 
             Object currentState = context.currentState.get();
-            Optional<Set<Method>> foundTransitions = helper.findTransitionForEvent(currentState, event);
+            Optional<Set<Method>> foundTransitions;
+            if (event instanceof TransitionOnTimeoutEvent) {
+                foundTransitions = Optional.<Set<Method>>of(newHashSet(((TransitionOnTimeoutEvent) event).getTimeOutMethod()));
+            } else {
+                foundTransitions = helper.findTransitionForEvent(currentState, event);
+            }
+
             if (!foundTransitions.isPresent()) {
-                LOGGER.warn("transition not found for event: " + event + ", current: " + currentState);
                 return;
             }
             if (foundTransitions.get().size() > 1) {
@@ -192,13 +210,26 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
 
             try {
                 transitionMethod.setAccessible(true);
-                Object result = transitionMethod.invoke(currentState, event);
+                Object[] methodArgs = new Object[0];
+                if (transitionMethod.getParameterTypes().length == 1) {
+                    methodArgs = new Object[]{ event };
+                }
+                Object result = transitionMethod.invoke(currentState, methodArgs);
                 if (result == null) {
                     return;
                 }
 
                 executeActionImplied(currentState);
                 executeActionOnExit(currentState);
+
+                for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(currentState)) {
+                    if (scheduledFutures.containsKey(e)) {
+                        boolean cancelled = scheduledFutures.get(e).cancel(false);
+                        if (cancelled) {
+                            LOGGER.info("cancelled timeout-transition for state: " + currentState);
+                        }
+                    }
+                }
 
                 currentState = result;
 
@@ -209,6 +240,10 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
             }
             executeActionImplied(currentState);
             executeActionOnEnter(currentState);
+
+            for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(currentState)) {
+                timerAt(e, e.getPeriod(), e.getTimeUnit());
+            }
         }
     }
 
@@ -269,19 +304,17 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
     @Override
     protected void startUp() throws Exception {
         LOGGER.info("startUp");
-        scheduleTimers(helper.getTimerEvents());
+        scheduleTimerEvents(helper.getTimerEvents());
         queue(ServiceEvent.START);
     }
 
-    private void scheduleTimers(Set<Object> timerEvents) {
+    private void scheduleTimerEvents(Set<Object> timerEvents) {
         for (Object timerEvent : timerEvents) {
             TimerEvent annotation = timerEvent.getClass().getAnnotation(TimerEvent.class);
             switch (annotation.type()) {
             case ScheduledFixedRateTimer:
                 timerAtFixedRate(timerEvent, annotation.delay(), annotation.period(), annotation.timeUnit());
                 break;
-            case ScheduledFixedDelayTimer:
-                throw new RuntimeException("not implemented yet...");
             case ScheduledTimer:
                 timerAt(timerEvent, annotation.delay(), annotation.timeUnit());
                 break;

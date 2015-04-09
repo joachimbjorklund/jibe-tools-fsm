@@ -6,6 +6,7 @@ import jibe.tools.fsm.annotations.State;
 import jibe.tools.fsm.annotations.StateMachine;
 import jibe.tools.fsm.annotations.TimerEvent;
 import jibe.tools.fsm.annotations.Transition;
+import jibe.tools.fsm.annotations.TransitionOnTimeout;
 import jibe.tools.fsm.api.ActionType;
 import jibe.tools.fsm.api.Engine;
 import jibe.tools.fsm.core.EngineFactory;
@@ -14,6 +15,7 @@ import org.joda.time.Period;
 
 import java.util.concurrent.TimeUnit;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static jibe.tools.fsm.api.EventType.ScheduledFixedRateTimer;
 
 /**
@@ -38,12 +40,10 @@ public class TrafficLightFSM {
 
     @StartState
     private class Red {
-        @Transition
-        public RedYellow event(HeartBeat heartBeat) {
-            if (new Period(wentOn, heartBeat.getTriggeredAt()).getSeconds() >= RED_MAX) {
-                return new RedYellow();
-            }
-            return null;
+
+        @TransitionOnTimeout(period = RED_MAX, timeUnit = SECONDS)
+        public RedYellow timeout() {
+            return new RedYellow();
         }
 
         @Action(ActionType.OnEnter)
