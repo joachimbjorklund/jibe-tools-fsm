@@ -9,7 +9,7 @@ Add Jibe Tools Fsm to your project. for maven projects just add this dependency:
 <dependency>
     <groupId>jibe</groupId>
     <artifactId>jibe-tools-fsm</artifactId>
-    <version>0.9.5</version>
+    <version>0.9.6</version>
 </dependency>
 ```
 And this repository:
@@ -36,17 +36,13 @@ import jibe.tools.fsm.annotations.Action;
 import jibe.tools.fsm.annotations.StartState;
 import jibe.tools.fsm.annotations.State;
 import jibe.tools.fsm.annotations.StateMachine;
-import jibe.tools.fsm.annotations.TimerEvent;
 import jibe.tools.fsm.annotations.Transition;
+import jibe.tools.fsm.annotations.TransitionOnTimeout;
 import jibe.tools.fsm.api.ActionType;
 import jibe.tools.fsm.api.Engine;
 import jibe.tools.fsm.core.EngineFactory;
-import org.joda.time.LocalDateTime;
-import org.joda.time.Period;
 
-import java.util.concurrent.TimeUnit;
-
-import static jibe.tools.fsm.api.EventType.ScheduledFixedRateTimer;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 /**
  *
@@ -54,103 +50,128 @@ import static jibe.tools.fsm.api.EventType.ScheduledFixedRateTimer;
 @StateMachine
 public class TrafficLightFSM {
 
-    public static final int RED_MAX = 10;
-    private static final int RED_YELLOW_MAX = 2;
-    private static final int YELLOW_MAX = 2;
-    private static final int GREEN_MAX = 5;
-
-    private LocalDateTime wentOn;
-
-    @StartState
-    private class Red {
-        @Transition
-        public RedYellow event(HeartBeat heartBeat) {
-            if (new Period(wentOn, heartBeat.getTriggeredAt()).getSeconds() >= RED_MAX) {
-                return new RedYellow();
-            }
-            return null;
-        }
-
-        @Action(ActionType.OnEnter)
-        public void onEnter() {
-            System.out.println("RED");
-            wentOn = LocalDateTime.now();
-        }
-    }
-
-    @State
-    private class RedYellow {
-        @Transition
-        public Green event(HeartBeat heartBeat) {
-            if (new Period(wentOn, heartBeat.getTriggeredAt()).getSeconds() >= RED_YELLOW_MAX) {
-                return new Green();
-            }
-            return null;
-        }
-
-        @Action(ActionType.OnEnter)
-        public void onEnter() {
-            System.out.println("RED_AND_YELLOW");
-            wentOn = LocalDateTime.now();
-        }
-    }
-
-    @State
-    private class Yellow {
-        @Transition
-        public Red event(HeartBeat heartBeat) {
-            if (new Period(wentOn, heartBeat.getTriggeredAt()).getSeconds() >= YELLOW_MAX) {
-                return new Red();
-            }
-            return null;
-        }
-
-        @Action(ActionType.OnEnter)
-        public void onEnter() {
-            System.out.println("YELLOW");
-            wentOn = LocalDateTime.now();
-        }
-    }
-
-    @State
-    private class Green {
-        @Transition
-        public Yellow event(HeartBeat heartBeat) {
-            if (new Period(wentOn, heartBeat.getTriggeredAt()).getSeconds() >= GREEN_MAX) {
-                return new Yellow();
-            }
-            return null;
-        }
-
-        @Action(ActionType.OnEnter)
-        public void onEnter() {
-            System.out.println("GREEN");
-            wentOn = LocalDateTime.now();
-        }
-    }
-
-    @TimerEvent(type = ScheduledFixedRateTimer, delay = 0, period = 100, timeUnit = TimeUnit.MILLISECONDS)
-    public class HeartBeat {
-        private LocalDateTime triggeredAt;
-
-        public LocalDateTime getTriggeredAt() {
-            return triggeredAt;
-        }
-
-        @Action(ActionType.Implied)
-        public void trigger() {
-            triggeredAt = LocalDateTime.now();
-        }
-    }
+    private Object currentState;
 
     public static void main(String[] args) throws InterruptedException {
 
-        TrafficLightFSM fsm = new TrafficLightFSM();
-        Engine engine = EngineFactory.newInstance().newEngine(fsm);
+        Engine engine = EngineFactory.newInstance().newEngine(new TrafficLightFSM());
         engine.start();
+
+        Thread.sleep(30000);
+        engine.event("error");
+
+        Thread.sleep(10000);
+        engine.event("fixed");
+
+        Thread.sleep(30000);
+        engine.stop();
+    }
+
+    @StartState
+    private class RedLight {
+        @Action(ActionType.OnEnter)
+        public void onEnter() {
+            System.out.println("RED");
+            currentState = this;
+        }
+
+        @TransitionOnTimeout(period = 10, timeUnit = SECONDS)
+        public RedAndYellowLight timeout() {
+            return new RedAndYellowLight();
+        }
+
+        @Transition
+        public BlinkingYellowLight event(String s) {
+            if ("error".equals(s)) {
+                return new BlinkingYellowLight();
+            }
+            return null;
+        }
+    }
+
+    @State
+    private class RedAndYellowLight {
+        @Action(ActionType.OnEnter)
+        public void onEnter() {
+            System.out.println("RED_AND_YELLOW");
+            currentState = this;
+        }
+
+        @TransitionOnTimeout(period = 2, timeUnit = SECONDS)
+        public GreenLight timeout() {
+            return new GreenLight();
+        }
+
+        @Transition
+        public BlinkingYellowLight event(String s) {
+            if ("error".equals(s)) {
+                return new BlinkingYellowLight();
+            }
+            return null;
+        }
+    }
+
+    @State
+    private class YellowLight {
+        @Action(ActionType.OnEnter)
+        public void onEnter() {
+            System.out.println("YELLOW");
+            currentState = this;
+        }
+
+        @TransitionOnTimeout(period = 2, timeUnit = SECONDS)
+        public RedLight timeout() {
+            return new RedLight();
+        }
+
+        @Transition
+        public BlinkingYellowLight event(String s) {
+            if ("error".equals(s)) {
+                return new BlinkingYellowLight();
+            }
+            return null;
+        }
+    }
+
+    @State
+    private class GreenLight {
+        @Action(ActionType.OnEnter)
+        public void onEnter() {
+            System.out.println("GREEN");
+            currentState = this;
+        }
+
+        @TransitionOnTimeout(period = 2, timeUnit = SECONDS)
+        public YellowLight timeout() {
+            return new YellowLight();
+        }
+
+        @Transition
+        public BlinkingYellowLight event(String s) {
+            if ("error".equals(s)) {
+                return new BlinkingYellowLight();
+            }
+            return null;
+        }
+    }
+
+    @State
+    private class BlinkingYellowLight {
+        @Action(ActionType.OnEnter)
+        public void onEnter() {
+            System.out.println("BLINKING_YELLOW");
+            currentState = this;
+        }
+
+        @Transition
+        public RedLight event(String s) {
+            if ("fixed".equals(s)) {
+                return new RedLight();
+            }
+            return null;
+        }
     }
 }
-
 ```
 
 That's all folks!

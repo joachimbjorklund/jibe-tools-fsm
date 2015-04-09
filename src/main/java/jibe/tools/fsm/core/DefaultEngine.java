@@ -3,6 +3,7 @@ package jibe.tools.fsm.core;
 import com.google.common.base.Optional;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.AbstractExecutionThreadService;
+import jibe.tools.fsm.annotations.StateMachine;
 import jibe.tools.fsm.annotations.TimerEvent;
 import jibe.tools.fsm.api.Context;
 import jibe.tools.fsm.api.Engine;
@@ -32,27 +33,34 @@ import static java.util.concurrent.Executors.newScheduledThreadPool;
 /**
  *
  */
-public class DefaultEngine extends AbstractExecutionThreadService implements Engine {
+public class DefaultEngine<F, E> extends AbstractExecutionThreadService implements Engine<F, E> {
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultEngine.class);
     private final Configuration configuration;
-    private final Object fsm;
+    private final F fsm;
     private ExecutorService executorService;
     private ScheduledExecutorService scheduledExecutorService;
     private DefaultContext context;
     private EngineHelper helper;
-    private BlockingQueue<Object> queue;
+    private BlockingQueue<E> queue;
     private ThreadFactory threadFactory;
 
     private CountDownLatch startLatch = new CountDownLatch(1);
     private Map<Object, ScheduledFuture> scheduledFutures = newHashMap();
 
-    DefaultEngine(Object fsm) {
+    DefaultEngine(F fsm) {
         this(fsm, new DefaultConfiguration());
     }
 
-    DefaultEngine(Object fsm, Configuration configuration) {
+    DefaultEngine(F fsm, Configuration configuration) {
+        if (fsm.getClass().getAnnotation(StateMachine.class) == null) {
+            throw new RuntimeException("fsm: " + fsm + " need to be annotated with @" + StateMachine.class.getName());
+        }
         this.fsm = fsm;
         this.configuration = new DefaultConfiguration().merge(configuration);
+
+        if (fsm instanceof Listener) {
+            addListener((Listener) fsm, executor());
+        }
 
         configure(configuration);
     }
@@ -70,28 +78,11 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
         scheduledExecutorService = configuration.getScheduledExecutorService();
     }
 
-    //    @Override
-    //    public Context context() {
-    //        return context;
-    //    }
-
-    @Override
-    public Optional<Object> getCurrentState() {
-        synchronized (context) {
-            return context.currentState;
-        }
-    }
-
-    @Override
-    public Optional<Object> getPreviousState() {
-        return context.previousState;
-    }
-
-    private void timerAtFixedRate(final Object timerEvent, long delay, long period, TimeUnit timeUnit) {
+    private void timerAtFixedRate(final E timerEvent, long delay, long period, TimeUnit timeUnit) {
         ScheduledFuture<?> scheduledFuture = scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
             @Override
             public void run() {
-                if (isRunning() && getCurrentState().isPresent()) {
+                if (isRunning() && getSnapshot().getCurrentState().isPresent()) {
                     event(timerEvent);
                 }
             }
@@ -100,11 +91,11 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
         scheduledFutures.put(timerEvent, scheduledFuture);
     }
 
-    private void timerAt(final Object timerEvent, long delay, TimeUnit timeUnit) {
+    private void timerAt(final E timerEvent, long delay, TimeUnit timeUnit) {
         ScheduledFuture<?> scheduledFuture = scheduledExecutorService.schedule(new Runnable() {
             @Override
             public void run() {
-                if (isRunning() && getCurrentState().isPresent()) {
+                if (isRunning() && getSnapshot().getCurrentState().isPresent()) {
                     event(timerEvent);
                 }
             }
@@ -114,7 +105,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
     }
 
     @Override
-    public Object getFsm() {
+    public F getFsm() {
         return fsm;
     }
 
@@ -143,7 +134,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
     }
 
     @Override
-    public void event(Object event) {
+    public void event(E event) {
         if (!isRunning()) {
             throw new IllegalStateException("not running");
         }
@@ -178,7 +169,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
                 context.currentState = Optional.of(startState);
 
                 for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(context.currentState.get())) {
-                    timerAt(e, e.getPeriod(), e.getTimeUnit());
+                    timerAt((E) e, e.getPeriod(), e.getTimeUnit());
                 }
                 return;
             }
@@ -224,10 +215,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
 
                 for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(currentState)) {
                     if (scheduledFutures.containsKey(e)) {
-                        boolean cancelled = scheduledFutures.get(e).cancel(false);
-                        if (cancelled) {
-                            LOGGER.info("cancelled timeout-transition for state: " + currentState);
-                        }
+                        scheduledFutures.get(e).cancel(false);
                     }
                 }
 
@@ -242,7 +230,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
             executeActionOnEnter(currentState);
 
             for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(currentState)) {
-                timerAt(e, e.getPeriod(), e.getTimeUnit());
+                timerAt((E) e, e.getPeriod(), e.getTimeUnit());
             }
         }
     }
@@ -250,6 +238,18 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
     @Override
     public Configuration getConfiguration() {
         return configuration;
+    }
+
+    @Override
+    public Snapshot getSnapshot() {
+        return new Snapshot() {
+            @Override
+            public Optional<Object> getCurrentState() {
+                synchronized (context) {
+                    return Optional.<Object>fromNullable(context.currentState);
+                }
+            }
+        };
     }
 
     private void executeActionImplied(Object obj) {
@@ -304,12 +304,12 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
     @Override
     protected void startUp() throws Exception {
         LOGGER.info("startUp");
-        scheduleTimerEvents(helper.getTimerEvents());
+        scheduleTimerEvents((Set<E>) helper.getTimerEvents());
         queue(ServiceEvent.START);
     }
 
-    private void scheduleTimerEvents(Set<Object> timerEvents) {
-        for (Object timerEvent : timerEvents) {
+    private void scheduleTimerEvents(Set<E> timerEvents) {
+        for (E timerEvent : timerEvents) {
             TimerEvent annotation = timerEvent.getClass().getAnnotation(TimerEvent.class);
             switch (annotation.type()) {
             case ScheduledFixedRateTimer:
@@ -324,9 +324,9 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
         }
     }
 
-    private void queue(Object event) {
+    private <T> void queue(T event) {
         try {
-            queue.add(event);
+            queue.add((E) event);
         } catch (Exception e) {
             throw Throwables.propagate(e);
         }
@@ -335,7 +335,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
     @Override
     protected void triggerShutdown() {
         LOGGER.info("triggerShutdown");
-        queue(ServiceEvent.STOP);
+        queue((E) ServiceEvent.STOP);
     }
 
     @Override
@@ -391,7 +391,7 @@ public class DefaultEngine extends AbstractExecutionThreadService implements Eng
         }
     }
 
-    private static class DefaultConfiguration implements Configuration {
+    public static class DefaultConfiguration implements Configuration {
         private ThreadFactory threadFactory;
         private ExecutorService executorService;
         private ScheduledExecutorService scheduledExecutorService;

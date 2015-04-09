@@ -13,7 +13,11 @@ public class EngineFactory {
         return new EngineFactory();
     }
 
-    public Engine newEngine(Object fsm) {
+    public <T, E> Engine<T, E> newEngine(T fsm) {
         return new DefaultEngine(fsm);
+    }
+
+    public <T, E> Engine<T, E> newEngine(T fsm, Engine.Configuration configuration) {
+        return new DefaultEngine(fsm, configuration);
     }
 }

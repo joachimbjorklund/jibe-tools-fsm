@@ -10,23 +10,18 @@ import java.util.concurrent.ThreadFactory;
 /**
  *
  */
-public interface Engine extends Service {
-    Object getFsm();
+public interface Engine<F, E> extends Service {
+    F getFsm();
 
     Engine start();
 
     Engine stop();
-    void event(Object event);
+
+    void event(E event);
 
     Configuration getConfiguration();
 
-    //    Context context();
-
-    Optional<Object> getCurrentState();
-
-    Optional<Object> getPreviousState();
-
-    //    void timerAtFixedRate(Object timerEvent, long delay, long period, TimeUnit timeUnit);
+    Snapshot getSnapshot();
 
     interface Configuration {
         ThreadFactory getThreadFactory();
@@ -40,5 +35,9 @@ public interface Engine extends Service {
         Long getActionTimeoutMillis();
 
         Long getTransitionTimeoutMillis();
+    }
+
+    interface Snapshot {
+        Optional<Object> getCurrentState();
     }
 }

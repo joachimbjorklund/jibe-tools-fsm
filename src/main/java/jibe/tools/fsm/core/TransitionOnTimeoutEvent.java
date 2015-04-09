@@ -15,9 +15,8 @@ public class TransitionOnTimeoutEvent {
 
     public TransitionOnTimeoutEvent(Method m) {
         this.timeOutMethod = m;
-        TransitionOnTimeout annotation = m.getAnnotation(TransitionOnTimeout.class);
-        this.period = annotation.period();
-        this.timeUnit = annotation.timeUnit();
+        this.period = m.getAnnotation(TransitionOnTimeout.class).period();
+        this.timeUnit = m.getAnnotation(TransitionOnTimeout.class).timeUnit();
     }
 
     public Method getTimeOutMethod() {

@@ -68,7 +68,9 @@ public class EngineHelper {
     }
 
     Set<Object> getTimerEvents() {
-        return newHashSet(transform(filter(filter(typeMap.values(), withType(TIMER_EVENT)), annotationMatchingMyFsm(TimerEvent.class)), toObj()));
+        Iterable<TypeDefinition> filter = filter(filter(typeMap.values(), withType(TIMER_EVENT)), annotationMatchingMyFsm(TimerEvent.class));
+        Iterable<Object> transform = Iterables.transform(filter, toObj());
+        return newHashSet(transform);
     }
 
     Set<TransitionOnTimeoutEvent> getTimeoutTransitions(Object state) {
@@ -247,11 +249,11 @@ public class EngineHelper {
         }
     }
 
-    private Function<TypeDefinition, Object> toObj() {
-        return new Function<TypeDefinition, Object>() {
+    private <T> Function<TypeDefinition, T> toObj() {
+        return new Function<TypeDefinition, T>() {
             @Override
-            public Object apply(TypeDefinition input) {
-                return input.obj;
+            public T apply(TypeDefinition input) {
+                return (T) input.obj;
             }
         };
     }
@@ -374,12 +376,12 @@ public class EngineHelper {
         };
     }
 
-    static class TypeDefinition {
+    static class TypeDefinition<T> {
         private final Type type;
-        private final Object obj;
+        private final T obj;
         private final Set<TransitionOnTimeoutEvent> timeoutEvents = newHashSet();
 
-        private TypeDefinition(Object obj, Class<? extends Annotation> stateAnnotation) {
+        private TypeDefinition(T obj, Class<? extends Annotation> stateAnnotation) {
             this.type = Type.from(stateAnnotation);
             this.obj = obj;
         }
