@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Method;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
@@ -389,6 +390,11 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
         public Configuration build() {
             return configuration;
         }
+
+        public ConfigurationBuilder classLoader(ClassLoader classLoader) {
+            configuration.setClassLoader(classLoader);
+            return this;
+        }
     }
 
     public static class DefaultConfiguration implements Configuration {
@@ -398,6 +404,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
         private int queueSize;
         private long actionTimeoutMills;
         private long transitionTimeoutMills;
+        private ClassLoader classLoader;
 
         private DefaultConfiguration() {
             threadFactory = platformThreadFactory();
@@ -406,6 +413,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
             queueSize = 1024;
             actionTimeoutMills = 1000;
             transitionTimeoutMills = 1000;
+            classLoader = DefaultConfiguration.class.getClassLoader();
         }
 
         public DefaultConfiguration merge(Configuration configuration) {
@@ -434,6 +442,11 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
             ScheduledExecutorService scheduledExecutorService = configuration.getScheduledExecutorService();
             if (scheduledExecutorService != null) {
                 setScheduledExecutorService(scheduledExecutorService);
+            }
+
+            ClassLoader classLoader = configuration.getClassLoader();
+            if (classLoader != null) {
+                setClassLoader(classLoader);
             }
 
             return this;
@@ -483,6 +496,15 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
         @Override
         public Long getTransitionTimeoutMillis() {
             return transitionTimeoutMills;
+        }
+
+        @Override
+        public ClassLoader getClassLoader() {
+            return classLoader;
+        }
+
+        public void setClassLoader(ClassLoader classLoader) {
+            this.classLoader = Objects.requireNonNull(classLoader);
         }
 
         public void setActionTimeoutMills(long actionTimeoutMills) {

@@ -17,6 +17,10 @@ public class EngineFactory {
         return new DefaultEngine(fsm);
     }
 
+    public <T, E> Engine<T, E> newEngine(T fsm, DefaultEngine.ConfigurationBuilder builder) {
+        return new DefaultEngine(fsm, builder.build());
+    }
+
     public <T, E> Engine<T, E> newEngine(T fsm, Engine.Configuration configuration) {
         return new DefaultEngine(fsm, configuration);
     }

@@ -8,7 +8,7 @@ import java.lang.annotation.Target;
 /**
  *
  */
-@Target({ ElementType.TYPE, ElementType.METHOD, ElementType.FIELD })
+@Target({ ElementType.TYPE })
 @Retention(RetentionPolicy.RUNTIME)
 public @interface State {
     String fsm() default "";

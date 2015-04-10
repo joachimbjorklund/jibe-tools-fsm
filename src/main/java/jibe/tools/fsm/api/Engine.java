@@ -35,6 +35,8 @@ public interface Engine<F, E> extends Service {
         Long getActionTimeoutMillis();
 
         Long getTransitionTimeoutMillis();
+
+        ClassLoader getClassLoader();
     }
 
     interface Snapshot {

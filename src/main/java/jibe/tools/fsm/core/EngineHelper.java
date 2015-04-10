@@ -24,11 +24,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
+import java.io.File;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.net.URL;
 import java.util.HashMap;
 import java.util.Set;
 
@@ -57,7 +59,7 @@ public class EngineHelper {
     EngineHelper(Engine engine) {
         this.engine = engine;
         this.fsm = engine.getFsm();
-        reflections = setupReflections();
+        reflections = setupReflections(engine.getConfiguration().getClassLoader());
         try {
             scanStatesAndFields();
             scanTimers();
@@ -206,7 +208,7 @@ public class EngineHelper {
                     Constructor declaredConstructor = c.getDeclaredConstructor();
                     declaredConstructor.setAccessible(true);
                     typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(), stateAnnotation));
-                }
+            }
             }
 
             for (final Method m : getAnnotatedWith(Method.class, stateAnnotation)) {
@@ -298,9 +300,11 @@ public class EngineHelper {
         return !Strings.isNullOrEmpty(annotation.name()) ? annotation.name() : fsm.getClass().getName();
     }
 
-    private Reflections setupReflections() {
+    private Reflections setupReflections(ClassLoader classLoader) {
         final Set<String> pkgs = getPackages(fsm);
         ConfigurationBuilder configurationBuilder = new ConfigurationBuilder()
+                .addClassLoader(classLoader)
+                .addUrls(tmpDir())
                 .forPackages(pkgs.toArray(new String[0]))
                 .filterInputsBy(new Predicate<String>() {
                     @Override
@@ -319,6 +323,14 @@ public class EngineHelper {
                         new MethodParameterScanner(),
                         new FieldAnnotationsScanner());
         return new Reflections(configurationBuilder);
+    }
+
+    private URL tmpDir() {
+        try {
+            return new File(System.getProperty("java.io.tmpdir")).toURI().toURL();
+        } catch (Exception e) {
+            throw Throwables.propagate(e);
+        }
     }
 
     private Set<String> getPackages(Object fsm) {
