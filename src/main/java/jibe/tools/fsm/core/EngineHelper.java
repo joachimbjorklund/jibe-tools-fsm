@@ -6,6 +6,7 @@ import com.google.common.base.Predicate;
 import com.google.common.base.Strings;
 import com.google.common.base.Throwables;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Sets;
 import jibe.tools.fsm.annotations.Action;
 import jibe.tools.fsm.annotations.StartState;
 import jibe.tools.fsm.annotations.State;
@@ -26,7 +27,6 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import java.io.File;
 import java.lang.annotation.Annotation;
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -69,61 +69,62 @@ public class EngineHelper {
         }
     }
 
-    Set<Object> getTimerEvents() {
+    Set<Class<?>> getTimerEvents() {
         Iterable<TypeDefinition> filter = filter(filter(typeMap.values(), withType(TIMER_EVENT)), annotationMatchingMyFsm(TimerEvent.class));
-        Iterable<Object> transform = Iterables.transform(filter, toObj());
+        Iterable<Class<?>> transform = Iterables.transform(filter, toClass());
         return newHashSet(transform);
     }
 
-    Set<TransitionOnTimeoutEvent> getTimeoutTransitions(Object state) {
-        return typeMap.get(state.getClass()).timeoutEvents;
+    Set<TransitionOnTimeoutEvent> getTimeoutTransitions(Class<?> stateClass) {
+        return typeMap.get(stateClass).timeoutEvents;
     }
 
     private Predicate<TypeDefinition> annotationMatchingMyFsm(final Class<? extends Annotation> annotationClass) {
         return new Predicate<TypeDefinition>() {
             @Override
             public boolean apply(@Nullable TypeDefinition input) {
-                String fsmName = getFsmNameFromAnnotation(input.obj, annotationClass);
-                return Strings.isNullOrEmpty(fsmName) || getFsmName(fsm).equals(fsmName);
+                String fsmName = getFsmNameFromAnnotation(input.cls, annotationClass);
+                return Strings.isNullOrEmpty(fsmName) || getFsmName(fsm.getClass()).equals(fsmName);
             }
         };
     }
 
-    Optional<Object> findState(Class<?> stateClass) {
-        Set<Object> states =
-                newHashSet(transform(filter(typeMap.values(), withTypeAndClass(STATE, stateClass)), toObj()));
+    Optional<Class<?>> findStateClass(Class<?> stateClass) {
+        Set<Class<?>> states =
+                newHashSet(transform(filter(typeMap.values(), withTypeAndClass(STATE, stateClass)), toClass()));
         if (states.iterator().hasNext()) {
-            return Optional.of(states.iterator().next());
+            return Optional.<Class<?>>of(states.iterator().next());
         }
 
-        states = newHashSet(transform(filter(typeMap.values(), withTypeAndClass(START_STATE, stateClass)), toObj()));
+        states = newHashSet(transform(filter(typeMap.values(), withTypeAndClass(START_STATE, stateClass)), toClass()));
         if (states.iterator().hasNext()) {
-            return Optional.of(states.iterator().next());
+            return Optional.<Class<?>>of(states.iterator().next());
         }
 
         return Optional.absent();
     }
 
-    Optional<Set<Object>> findStartState() {
-        Set<Object> startStates = newHashSet(transform(filter(typeMap.values(), withType(START_STATE)), toObj()));
+    Optional<Set<Class<?>>> findStartState() {
+        Set<Class<?>> startStateClasses = newHashSet(transform(filter(typeMap.values(), withType(START_STATE)), toClass()));
 
-        if (startStates.isEmpty()) {
+        if (startStateClasses.isEmpty()) {
             return Optional.absent();
         }
 
-        if (startStates.size() == 1) {
-            Object startState = startStates.iterator().next();
-            String fsmName = getFsmNameFromAnnotation(startState, StartState.class);
-            if (Strings.isNullOrEmpty(fsmName) || getFsmName(fsm).equals(fsmName)) {
-                return Optional.<Set<Object>>of(newHashSet(startState));
+        if (startStateClasses.size() == 1) {
+            Class<?> startStateClass = startStateClasses.iterator().next();
+            String fsmName = getFsmNameFromAnnotation(startStateClass, StartState.class);
+            if (Strings.isNullOrEmpty(fsmName) || getFsmName(fsm.getClass()).equals(fsmName)) {
+                return Optional.<Set<Class<?>>>of(Sets.<Class<?>>newHashSet(startStateClass));
             }
             return Optional.absent();
         }
 
-        Set<Object> filtered = newHashSet(filter(startStates, new Predicate<Object>() {
+        Set<Class<?>> filtered = newHashSet(filter(startStateClasses, new Predicate<Class<?>>() {
             @Override
-            public boolean apply(Object input) {
-                return getFsmName(fsm).equals(getFsmNameFromAnnotation(input, StartState.class)) || input.getClass().getDeclaringClass().equals(fsm.getClass());
+            public boolean apply(Class<?> input) {
+                return getFsmName(fsm.getClass()).equals(getFsmNameFromAnnotation(input, StartState.class)) || input.getClass().getDeclaringClass()
+                        .equals(fsm.getClass());
             }
         }));
 
@@ -132,29 +133,29 @@ public class EngineHelper {
         }
 
         if (filtered.size() == 1) {
-            return Optional.<Set<Object>>of(newHashSet(filtered.iterator().next()));
+            return Optional.<Set<Class<?>>>of(Sets.<Class<?>>newHashSet(filtered.iterator().next()));
         }
 
         return Optional.of(filtered);
     }
 
-    private String getFsmNameFromAnnotation(Object input, Class<? extends Annotation> annotationClass) {
+    private String getFsmNameFromAnnotation(Class<?> input, Class<? extends Annotation> annotationClass) {
         if (annotationClass.equals(StartState.class)) {
-            StartState annotation = input.getClass().getAnnotation((Class<StartState>) annotationClass);
+            StartState annotation = input.getAnnotation((Class<StartState>) annotationClass);
             if (annotation == null) {
                 throw new RuntimeException("shouldn't input: " + input + ", have annotation: " + annotationClass);
             }
             return annotation.fsm();
         }
         if (annotationClass.equals(State.class)) {
-            State annotation = input.getClass().getAnnotation((Class<State>) annotationClass);
+            State annotation = input.getAnnotation((Class<State>) annotationClass);
             if (annotation == null) {
                 throw new RuntimeException("shouldn't input: " + input + ", have annotation: " + annotationClass);
             }
             return annotation.fsm();
         }
         if (annotationClass.equals(TimerEvent.class)) {
-            TimerEvent annotation = input.getClass().getAnnotation((Class<TimerEvent>) annotationClass);
+            TimerEvent annotation = input.getAnnotation((Class<TimerEvent>) annotationClass);
             if (annotation == null) {
                 throw new RuntimeException("shouldn't input: " + input + ", have annotation: " + annotationClass);
             }
@@ -165,15 +166,16 @@ public class EngineHelper {
 
     private void scanTimers() throws IllegalAccessException, InvocationTargetException, InstantiationException, NoSuchMethodException {
         for (Class c : getAnnotatedWith(Class.class, TimerEvent.class)) {
-            try {
-                Constructor declaredConstructor = c.getDeclaredConstructor(fsm.getClass());
-                declaredConstructor.setAccessible(true);
-                typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(fsm), TimerEvent.class));
-            } catch (NoSuchMethodException e) {
-                Constructor declaredConstructor = c.getDeclaredConstructor();
-                declaredConstructor.setAccessible(true);
-                typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(), TimerEvent.class));
-            }
+            typeMap.put(c, new TypeDefinition(c, TimerEvent.class));
+            //            try {
+            //                Constructor declaredConstructor = c.getDeclaredConstructor(fsm.getClass());
+            //                declaredConstructor.setAccessible(true);
+            //                typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(fsm), TimerEvent.class));
+            //            } catch (NoSuchMethodException e) {
+            //                Constructor declaredConstructor = c.getDeclaredConstructor();
+            //                declaredConstructor.setAccessible(true);
+            //                typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(), TimerEvent.class));
+            //            }
         }
     }
 
@@ -200,62 +202,63 @@ public class EngineHelper {
         }
         for (Class<? extends Annotation> stateAnnotation : newHashSet(StartState.class, State.class)) {
             for (final Class c : getAnnotatedWith(Class.class, stateAnnotation)) {
-                try {
-                    Constructor declaredConstructor = c.getDeclaredConstructor(fsm.getClass());
-                    declaredConstructor.setAccessible(true);
-                    typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(fsm), stateAnnotation));
-                } catch (NoSuchMethodException e) {
-                    Constructor declaredConstructor = c.getDeclaredConstructor();
-                    declaredConstructor.setAccessible(true);
-                    typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(), stateAnnotation));
-            }
-            }
-
-            for (final Method m : getAnnotatedWith(Method.class, stateAnnotation)) {
-                Class<?> returnType = m.getReturnType();
-                if (typeMap.containsKey(returnType)) {
-                    continue;
-                }
-
-                if (!m.getDeclaringClass().equals(fsm.getClass())) {
-                    LOGGER.debug("skipping state constructing method: " + m + ", as it is not declared by the fsm itself...");
-                    continue;
-                }
-                Class<?>[] parameterTypes = m.getParameterTypes();
-                if (parameterTypes.length == 0) {
-                    typeMap.put(returnType, new TypeDefinition(m.invoke(fsm), stateAnnotation));
-                } else if ((parameterTypes.length == 1) && parameterTypes[0].equals(fsm.getClass())) {
-                    typeMap.put(parameterTypes[0], new TypeDefinition(m.invoke(fsm, fsm), stateAnnotation));
-                } else {
-                    throw new RuntimeException("unknown parameters for state constructing method: " + m);
-                }
+                typeMap.put(c, new TypeDefinition(c, stateAnnotation));
+                //                try {
+                //                    Constructor declaredConstructor = c.getDeclaredConstructor(fsm.getClass());
+                //                    declaredConstructor.setAccessible(true);
+                //                    typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(fsm), stateAnnotation));
+                //                } catch (NoSuchMethodException e) {
+                //                    Constructor declaredConstructor = c.getDeclaredConstructor();
+                //                    declaredConstructor.setAccessible(true);
+                //                    typeMap.put(c, new TypeDefinition(declaredConstructor.newInstance(), stateAnnotation));
+                //                }
             }
 
-            for (final Field f : getAnnotatedWith(Field.class, stateAnnotation)) {
-                if (!f.getDeclaringClass().equals(fsm.getClass())) {
-                    LOGGER.debug("skipping field: " + f + ", as it is not declared by the fsm itself...");
-                    continue;
-                }
-
-                if (!typeMap.containsKey(f.getType())) {
-                    throw new RuntimeException("type of field: " + f + " does not constitute a known state");
-                }
-
-                f.setAccessible(true);
-                Object state = f.get(fsm);
-                if (state != null) {
-                    LOGGER.warn("overwriting field: " + f + " with: " + typeMap.get(f.getType()));
-                }
-                f.set(fsm, typeMap.get(f.getType()).obj);
-            }
+            //            for (final Method m : getAnnotatedWith(Method.class, stateAnnotation)) {
+            //                Class<?> returnType = m.getReturnType();
+            //                if (typeMap.containsKey(returnType)) {
+            //                    continue;
+            //                }
+            //
+            //                if (!m.getDeclaringClass().equals(fsm.getClass())) {
+            //                    LOGGER.debug("skipping state constructing method: " + m + ", as it is not declared by the fsm itself...");
+            //                    continue;
+            //                }
+            //                Class<?>[] parameterTypes = m.getParameterTypes();
+            //                if (parameterTypes.length == 0) {
+            //                    typeMap.put(returnType, new TypeDefinition(m.invoke(fsm), stateAnnotation));
+            //                } else if ((parameterTypes.length == 1) && parameterTypes[0].equals(fsm.getClass())) {
+            //                    typeMap.put(parameterTypes[0], new TypeDefinition(m.invoke(fsm, fsm), stateAnnotation));
+            //                } else {
+            //                    throw new RuntimeException("unknown parameters for state constructing method: " + m);
+            //                }
+            //            }
+            //
+            //            for (final Field f : getAnnotatedWith(Field.class, stateAnnotation)) {
+            //                if (!f.getDeclaringClass().equals(fsm.getClass())) {
+            //                    LOGGER.debug("skipping field: " + f + ", as it is not declared by the fsm itself...");
+            //                    continue;
+            //                }
+            //
+            //                if (!typeMap.containsKey(f.getType())) {
+            //                    throw new RuntimeException("type of field: " + f + " does not constitute a known state");
+            //                }
+            //
+            //                f.setAccessible(true);
+            //                Object state = f.get(fsm);
+            //                if (state != null) {
+            //                    LOGGER.warn("overwriting field: " + f + " with: " + typeMap.get(f.getType()));
+            //                }
+            //                f.set(fsm, typeMap.get(f.getType()).cls);
+            //            }
         }
     }
 
-    private <T> Function<TypeDefinition, T> toObj() {
-        return new Function<TypeDefinition, T>() {
+    private Function<TypeDefinition, Class<?>> toClass() {
+        return new Function<TypeDefinition, Class<?>>() {
             @Override
-            public T apply(TypeDefinition input) {
-                return (T) input.obj;
+            public Class<?> apply(TypeDefinition input) {
+                return input.cls;
             }
         };
     }
@@ -274,7 +277,7 @@ public class EngineHelper {
         return new Predicate<TypeDefinition>() {
             @Override
             public boolean apply(TypeDefinition input) {
-                return (input.type == type) && input.obj.getClass().equals(clazz);
+                return (input.type == type) && input.cls.equals(clazz);
             }
         };
     }
@@ -292,16 +295,16 @@ public class EngineHelper {
         throw new RuntimeException("unknown type: " + type);
     }
 
-    private String getFsmName(Object fsm) {
-        StateMachine annotation = fsm.getClass().getAnnotation(StateMachine.class);
+    private String getFsmName(Class<?> fsmClass) {
+        StateMachine annotation = fsmClass.getAnnotation(StateMachine.class);
         if (annotation == null) {
-            throw new RuntimeException("fsm: " + fsm + " must be annotated with StateMachine");
+            throw new RuntimeException("fsm: " + fsmClass + " must be annotated with StateMachine");
         }
-        return !Strings.isNullOrEmpty(annotation.name()) ? annotation.name() : fsm.getClass().getName();
+        return !Strings.isNullOrEmpty(annotation.name()) ? annotation.name() : fsmClass.getClass().getName();
     }
 
     private Reflections setupReflections(ClassLoader classLoader) {
-        final Set<String> pkgs = getPackages(fsm);
+        final Set<String> pkgs = getPackages(fsm.getClass());
         ConfigurationBuilder configurationBuilder = new ConfigurationBuilder()
                 .addClassLoader(classLoader)
                 .addUrls(tmpDir())
@@ -333,20 +336,20 @@ public class EngineHelper {
         }
     }
 
-    private Set<String> getPackages(Object fsm) {
-        StateMachine annotation = fsm.getClass().getAnnotation(StateMachine.class);
+    private Set<String> getPackages(Class<?> fsmClass) {
+        StateMachine annotation = fsmClass.getAnnotation(StateMachine.class);
         Set<String> answer = newHashSet();
         if (annotation != null) {
             answer = newHashSet(annotation.pkgs());
         }
         if (answer.isEmpty()) {
-            answer = newHashSet(fsm.getClass().getPackage().getName());
+            answer = newHashSet(fsmClass.getPackage().getName());
         }
         return answer;
     }
 
-    Optional<Set<Method>> findTransitionForEvent(Object state, Object event) {
-        Set<Method> transitions = getAllMethods(state.getClass(), withAnnotation(Transition.class), withParameters(event.getClass()));
+    Optional<Set<Method>> findTransitionForEvent(Class<?> stateClass, Object event) {
+        Set<Method> transitions = getAllMethods(stateClass, withAnnotation(Transition.class), withParameters(event.getClass()));
         if (transitions.isEmpty()) {
             return Optional.absent();
         } else if (transitions.size() > 1) {
@@ -361,21 +364,21 @@ public class EngineHelper {
         }
     }
 
-    Set<Method> findActionImplied(Object obj) {
-        Set<Method> methods = getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.Implied), withParameters());
-        methods.addAll(getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.Implied), withParameters(fsm.getClass())));
+    Set<Method> findActionImpliedMethods(Class<?> cls) {
+        Set<Method> methods = getAllMethods(cls, withAnnotation(Action.class), withActionType(ActionType.Implied), withParameters());
+        methods.addAll(getAllMethods(cls, withAnnotation(Action.class), withActionType(ActionType.Implied), withParameters(fsm.getClass())));
         return methods;
     }
 
-    Set<Method> findActionOnExit(Object obj) {
-        Set<Method> methods = getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnExit), withParameters());
-        methods.addAll(getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnExit), withParameters(fsm.getClass())));
+    Set<Method> findActionOnExitMethods(Class<?> cls) {
+        Set<Method> methods = getAllMethods(cls, withAnnotation(Action.class), withActionType(ActionType.OnExit), withParameters());
+        methods.addAll(getAllMethods(cls, withAnnotation(Action.class), withActionType(ActionType.OnExit), withParameters(fsm.getClass())));
         return methods;
     }
 
-    Set<Method> findActionOnEnter(Object obj) {
-        Set<Method> methods = getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnEnter), withParameters());
-        methods.addAll(getAllMethods(obj.getClass(), withAnnotation(Action.class), withActionType(ActionType.OnEnter), withParameters(fsm.getClass())));
+    Set<Method> findActionOnEnterMethods(Class<?> cls) {
+        Set<Method> methods = getAllMethods(cls, withAnnotation(Action.class), withActionType(ActionType.OnEnter), withParameters());
+        methods.addAll(getAllMethods(cls, withAnnotation(Action.class), withActionType(ActionType.OnEnter), withParameters(fsm.getClass())));
         return methods;
     }
 
@@ -390,18 +393,18 @@ public class EngineHelper {
 
     static class TypeDefinition<T> {
         private final Type type;
-        private final T obj;
+        private final Class<T> cls;
         private final Set<TransitionOnTimeoutEvent> timeoutEvents = newHashSet();
 
-        private TypeDefinition(T obj, Class<? extends Annotation> stateAnnotation) {
+        private TypeDefinition(Class<T> cls, Class<? extends Annotation> stateAnnotation) {
             this.type = Type.from(stateAnnotation);
-            this.obj = obj;
+            this.cls = cls;
         }
 
         @Override
         public String toString() {
             return "StateDefinition{" +
-                    "obj=" + obj +
+                    "cls=" + cls +
                     ", type=" + type +
                     '}';
         }

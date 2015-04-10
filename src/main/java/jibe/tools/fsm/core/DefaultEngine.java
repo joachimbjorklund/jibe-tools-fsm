@@ -10,6 +10,7 @@ import jibe.tools.fsm.api.Engine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.Objects;
@@ -38,13 +39,13 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultEngine.class);
     private final Configuration configuration;
     private final F fsm;
+    Map<Class<?>, Object> instanceMap = newHashMap();
     private ExecutorService executorService;
     private ScheduledExecutorService scheduledExecutorService;
     private DefaultContext context;
     private EngineHelper helper;
     private BlockingQueue<E> queue;
     private ThreadFactory threadFactory;
-
     private CountDownLatch startLatch = new CountDownLatch(1);
     private Map<Object, ScheduledFuture> scheduledFutures = newHashMap();
 
@@ -151,7 +152,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
             if (ServiceEvent.START == event) {
                 startLatch.countDown();
 
-                Optional<Set<Object>> startStates = helper.findStartState();
+                Optional<Set<Class<?>>> startStates = helper.findStartState();
                 int foundNbrStartStates = startStates.isPresent() ? startStates.get().size() : 0;
                 if (foundNbrStartStates != 1) {
                     if (foundNbrStartStates == 0) {
@@ -163,11 +164,11 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
                     return;
                 }
 
-                Object startState = startStates.get().iterator().next();
+                Class<?> startStateClass = startStates.get().iterator().next();
 
-                executeActionImplied(startState);
-                executeActionOnEnter(startState);
-                context.currentState = Optional.of(startState);
+                executeActionImplied(instanceMap(startStateClass));
+                executeActionOnEnter(instanceMap(startStateClass));
+                context.currentState = Optional.<Class<?>>of(startStateClass);
 
                 for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(context.currentState.get())) {
                     timerAt((E) e, e.getPeriod(), e.getTimeUnit());
@@ -177,12 +178,12 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
 
             executeActionImplied(event);
 
-            Object currentState = context.currentState.get();
+            Class<?> currentStateClass = context.currentState.get();
             Optional<Set<Method>> foundTransitions;
             if (event instanceof TransitionOnTimeoutEvent) {
                 foundTransitions = Optional.<Set<Method>>of(newHashSet(((TransitionOnTimeoutEvent) event).getTimeOutMethod()));
             } else {
-                foundTransitions = helper.findTransitionForEvent(currentState, event);
+                foundTransitions = helper.findTransitionForEvent(currentStateClass, event);
             }
 
             if (!foundTransitions.isPresent()) {
@@ -195,7 +196,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
             }
 
             Method transitionMethod = foundTransitions.get().iterator().next();
-            Optional<Object> foundToState = helper.findState(transitionMethod.getReturnType());
+            Optional<Class<?>> foundToState = helper.findStateClass(transitionMethod.getReturnType());
             if (!foundToState.isPresent()) {
                 throw new RuntimeException("transition returns something that is not a known state");
             }
@@ -206,34 +207,58 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
                 if (transitionMethod.getParameterTypes().length == 1) {
                     methodArgs = new Object[]{ event };
                 }
-                Object result = transitionMethod.invoke(currentState, methodArgs);
+                Object result = transitionMethod.invoke(instanceMap(currentStateClass), methodArgs);
                 if (result == null) {
                     return;
                 }
 
-                executeActionImplied(currentState);
-                executeActionOnExit(currentState);
+                executeActionImplied(instanceMap(currentStateClass));
+                executeActionOnExit(instanceMap(currentStateClass));
 
-                for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(currentState)) {
+                for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(currentStateClass)) {
                     if (scheduledFutures.containsKey(e)) {
                         scheduledFutures.get(e).cancel(false);
                     }
                 }
 
-                currentState = result;
+                currentStateClass = result.getClass();
 
                 context.previousState = context.currentState;
-                context.currentState = Optional.of(result);
+                context.currentState = Optional.<Class<?>>of(result.getClass());
             } catch (Exception e) {
                 throw Throwables.propagate(e);
             }
-            executeActionImplied(currentState);
-            executeActionOnEnter(currentState);
+            executeActionImplied(instanceMap(currentStateClass));
+            executeActionOnEnter(instanceMap(currentStateClass));
 
-            for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(currentState)) {
+            for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(currentStateClass)) {
                 timerAt((E) e, e.getPeriod(), e.getTimeUnit());
             }
         }
+    }
+
+    private Object instanceMap(Class<?> cls) {
+        Object o = instanceMap.get(cls);
+        if (o != null) {
+            return o;
+        }
+
+        try {
+            Constructor declaredConstructor = cls.getDeclaredConstructor(fsm.getClass());
+            declaredConstructor.setAccessible(true);
+            instanceMap.put(cls, declaredConstructor.newInstance(fsm));
+        } catch (NoSuchMethodException e) {
+            try {
+                Constructor declaredConstructor = cls.getDeclaredConstructor();
+                declaredConstructor.setAccessible(true);
+                instanceMap.put(cls, declaredConstructor.newInstance());
+            } catch (Exception e2) {
+                throw Throwables.propagate(e2);
+            }
+        } catch (Exception e) {
+            throw Throwables.propagate(e);
+        }
+        return instanceMap.get(cls);
     }
 
     @Override
@@ -254,19 +279,19 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
     }
 
     private void executeActionImplied(Object obj) {
-        for (Method m : helper.findActionImplied(obj)) {
+        for (Method m : helper.findActionImpliedMethods(obj.getClass())) {
             executeAction(obj, m);
         }
     }
 
     private void executeActionOnEnter(Object obj) {
-        for (Method m : helper.findActionOnEnter(obj)) {
+        for (Method m : helper.findActionOnEnterMethods(obj.getClass())) {
             executeAction(obj, m);
         }
     }
 
     private void executeActionOnExit(Object obj) {
-        for (Method m : helper.findActionOnExit(obj)) {
+        for (Method m : helper.findActionOnExitMethods(obj.getClass())) {
             executeAction(obj, m);
         }
     }
@@ -527,7 +552,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
      *
      */
     private class DefaultContext implements Context {
-        private Optional<Object> currentState = Optional.absent();
-        private Optional<Object> previousState = Optional.absent();
+        private Optional<Class<?>> currentState = Optional.absent();
+        private Optional<Class<?>> previousState = Optional.absent();
     }
 }
