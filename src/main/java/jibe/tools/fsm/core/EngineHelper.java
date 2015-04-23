@@ -61,7 +61,7 @@ public class EngineHelper {
         this.fsm = engine.getFsm();
         reflections = setupReflections(engine.getConfiguration().getClassLoader());
         try {
-            scanStatesAndFields();
+            scanStates();
             scanTimers();
             scanTimeouts();
         } catch (Exception e) {
@@ -196,12 +196,13 @@ public class EngineHelper {
         }
     }
 
-    private void scanStatesAndFields() throws NoSuchMethodException, IllegalAccessException, InvocationTargetException, InstantiationException {
+    private void scanStates() throws NoSuchMethodException, IllegalAccessException, InvocationTargetException, InstantiationException {
         if (!typeMap.isEmpty()) {
             throw new IllegalStateException("already scanned....");
         }
         for (Class<? extends Annotation> stateAnnotation : newHashSet(StartState.class, State.class)) {
             for (final Class c : getAnnotatedWith(Class.class, stateAnnotation)) {
+                LOGGER.debug("scanned state: " + c);
                 typeMap.put(c, new TypeDefinition(c, stateAnnotation));
                 //                try {
                 //                    Constructor declaredConstructor = c.getDeclaredConstructor(fsm.getClass());

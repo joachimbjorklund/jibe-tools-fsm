@@ -1,16 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://maven.apache.org/POM/4.0.0"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>jibe</groupId>
+    <groupId>nu.jibe</groupId>
     <artifactId>jibe-tools-fsm</artifactId>
     <version>0.9.8-SNAPSHOT</version>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>Annotation-driven FSM</description>
+    <url>https://github.com/joachimbjorklund/jibe-tools-fsm</url>
+
+    <licenses>
+        <license>
+            <name>The Apache License, Version 2.0</name>
+            <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>Joachim Björklund</name>
+            <email>joachim@jibe.nu</email>
+            <organization>Jibe</organization>
+            <organizationUrl>http://www.jibe.nu</organizationUrl>
+        </developer>
+    </developers>
 
     <scm>
         <connection>scm:git:https://github.com/joachimbjorklund/jibe-tools-fsm.git</connection>
         <developerConnection>scm:git:https://github.com/joachimbjorklund/jibe-tools-fsm.git</developerConnection>
-      <tag>HEAD</tag>
-  </scm>
+        <url>https://github.com/joachimbjorklund/jibe-tools-fsm.git</url>
+        <tag>HEAD</tag>
+    </scm>
 
     <properties>
         <mockito-all.version>1.9.5</mockito-all.version>
@@ -24,6 +46,11 @@
         <junit.version>4.12</junit.version>
         <javassist.version>3.18.1-GA</javassist.version>
         <commons-lang3.version>3.3.2</commons-lang3.version>
+        <maven-release-plugin.version>2.5.1</maven-release-plugin.version>
+        <maven-compiler-plugin.version>3.1</maven-compiler-plugin.version>
+        <maven-source-plugin.version>2.4</maven-source-plugin.version>
+        <maven-javadoc-plugin.version>2.10.3</maven-javadoc-plugin.version>
+        <maven-gpg-plugin.version>1.6</maven-gpg-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -129,8 +156,13 @@
             <plugins>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-release-plugin</artifactId>
+                    <version>${maven-release-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-compiler-plugin</artifactId>
-                    <version>3.1</version>
+                    <version>${maven-compiler-plugin.version}</version>
                     <configuration>
                         <source>1.7</source>
                         <target>1.7</target>
@@ -141,18 +173,42 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-release-plugin</artifactId>
-                <version>2.5.1</version>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-source-plugin</artifactId>
-                <version>2.4</version>
+                <version>${maven-source-plugin.version}</version>
                 <executions>
                     <execution>
                         <id>attach-sources</id>
+                        <phase>verify</phase>
                         <goals>
-                            <goal>jar</goal>
+                            <goal>jar-no-fork</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>${maven-javadoc-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>attach-javadoc</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>javadoc-no-fork</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-gpg-plugin</artifactId>
+                <version>${maven-gpg-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>sign-artifacts</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>sign</goal>
                         </goals>
                     </execution>
                 </executions>
@@ -160,21 +216,10 @@
         </plugins>
     </build>
 
-    <repositories>
-        <repository>
-            <id>repository-jibe</id>
-            <url>http://nexus.jibe.nu/nexus/content/repositories/public</url>
-        </repository>
-    </repositories>
-
     <distributionManagement>
         <repository>
-            <id>repository-jibe-releases</id>
-            <url>http://nexus.jibe.nu/nexus/content/repositories/releases</url>
+            <id>oss-staging</id>
+            <url>https://oss.sonatype.org/service/local/staging/deploy/maven2</url>
         </repository>
-        <!--<snapshotRepository>-->
-        <!--<id>repository-jibe-snapshots</id>-->
-        <!--<url>http://nexus.jibe.nu/nexus/content/repositories/snapshots/</url>-->
-        <!--</snapshotRepository>-->
     </distributionManagement>
 </project>

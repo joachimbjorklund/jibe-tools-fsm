@@ -1,11 +1,13 @@
 package jibe.tools.fsm.builder;
 
 import com.google.common.base.Throwables;
+import com.google.common.collect.Sets;
 import javassist.ClassPool;
 import javassist.CtClass;
 import javassist.bytecode.AnnotationsAttribute;
 import javassist.bytecode.ClassFile;
 import javassist.bytecode.ConstPool;
+import jibe.tools.fsm.annotations.State;
 import jibe.tools.fsm.annotations.StateMachine;
 import jibe.tools.fsm.api.Engine;
 import jibe.tools.fsm.core.EngineFactory;
@@ -18,19 +20,24 @@ import java.lang.annotation.Annotation;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static com.google.common.collect.Lists.newArrayList;
+import static com.google.common.collect.Maps.newHashMap;
 import static jibe.tools.fsm.core.DefaultEngine.configurationBuilder;
 
 /**
  *
  */
-public class FSMBuilder {
+public class FSMBuilder<T extends StateBuilder> {
     private static final Logger LOGGER = LoggerFactory.getLogger(FSMBuilder.class);
 
     final String packageName;
     private final CtClass stateMachine;
-    private final List<StateBuilder> stateBuilders = newArrayList();
+
+    private final Map<String, CtClass> stateMap = newHashMap();
+    private final Set<T> stateBuilders = Sets.newHashSet();
 
     public FSMBuilder() {
         packageName = "jibe.tools.fsm.builder." + RandomStringUtils.randomAlphabetic(5);
@@ -43,7 +50,11 @@ public class FSMBuilder {
         }
     }
 
-    public static Class<?> writeFile(CtClass ctClass) {
+    public static TransitionBuilder transition(String name) {
+        return new TransitionBuilder(name);
+    }
+
+    private Class<?> writeFile(CtClass ctClass) {
         try {
             ctClass.writeFile(System.getProperty("java.io.tmpdir"));
             return ctClass.toClass();
@@ -52,24 +63,32 @@ public class FSMBuilder {
         }
     }
 
-    public StateBuilder state(String name) {
-        return add(new StateBuilder(this, name));
-    }
-
-    public StartStateBuilder startState(String name) {
-        return add(new StartStateBuilder(this, name));
-    }
-
-    private <T extends StateBuilder> T add(T stateBuilder) {
-        stateBuilders.add(stateBuilder);
-        return stateBuilder;
-    }
-
     public Engine build() {
         try {
+            // All states
+            Set<StateBuilder.StateFacade> stateFacades = Sets.newHashSet();
             for (StateBuilder sb : stateBuilders) {
-                sb.build();
+                StateBuilder.StateFacade stateFacade = sb.build();
+                stateFacades.add(stateFacade);
+                String className = packageName + "." + stateFacade.getName();
+                stateMap.put(className, makeClassWithAnnotation(className, stateFacade.getAnnotationClass()));
             }
+            // Transition States
+            Set<TransitionBuilder.TransitionFacade> transitionFacades = Sets.newHashSet();
+            for (StateBuilder.StateFacade sf : stateFacades) {
+                for (TransitionBuilder.TransitionFacade tf : sf.getTransitions()) {
+                    transitionFacades.add(tf);
+                    String toState = tf.getToState();
+                    String className = packageName + "." + toState;
+                    stateMap.put(className, makeClassWithAnnotation(className, State.class));
+                }
+            }
+
+            // Create the real States
+            for (CtClass ctClass : stateMap.values()) {
+                ctClass.writeFile(System.getProperty("java.io.tmpdir"));
+            }
+
             return EngineFactory.newInstance()
                     .newEngine(writeFile(stateMachine).newInstance(), configurationBuilder()
                             .classLoader(newClassLoader()));
@@ -117,6 +136,11 @@ public class FSMBuilder {
             throw Throwables.propagate(e);
         }
         return new MyClassLoader(urLs.toArray(new URL[0]));
+    }
+
+    public T addStateBuilder(T stateBuilder) {
+        stateBuilders.add(stateBuilder);
+        return stateBuilder;
     }
 
     public class MyClassLoader extends URLClassLoader {
