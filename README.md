@@ -7,20 +7,12 @@ With annotations you define your state-machine. No interfaces to implement... Ju
 Add Jibe Tools Fsm to your project. for maven projects just add this dependency:
 ```xml
 <dependency>
-    <groupId>jibe</groupId>
+    <groupId>nu.jibe</groupId>
     <artifactId>jibe-tools-fsm</artifactId>
-    <version>0.9.7</version>
+    <version>0.9.10</version>
 </dependency>
 ```
-And this repository:
-```xml
-<repositories>
-  <repository>
-    <id>repository-jibe</id>
-      <url>http://nexus.jibe.nu/nexus/content/repositories/public</url>
-  </repository>
-</repositories>
-```
+
 Or clone with
 ```
 git clone https://github.com/joachimbjorklund/jibe-tools-fsm.git
