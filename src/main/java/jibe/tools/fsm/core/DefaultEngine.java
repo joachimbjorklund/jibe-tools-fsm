@@ -39,15 +39,16 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultEngine.class);
     private final Configuration configuration;
     private final F fsm;
-    Map<Class<?>, Object> instanceMap = newHashMap();
+    private Map<Class<?>, Object> instanceMap = newHashMap();
     private ExecutorService executorService;
     private ScheduledExecutorService scheduledExecutorService;
     private DefaultContext context;
     private EngineHelper helper;
     private BlockingQueue<E> queue;
-    private ThreadFactory threadFactory;
     private CountDownLatch startLatch = new CountDownLatch(1);
     private Map<Object, ScheduledFuture> scheduledFutures = newHashMap();
+
+    private final static Object DUDE = new Object();
 
     DefaultEngine(F fsm) {
         this(fsm, new DefaultConfiguration());
@@ -75,18 +76,15 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
         helper = new EngineHelper(this);
         context = new DefaultContext();
         queue = new LinkedBlockingQueue<>(configuration.getQueueSize());
-        threadFactory = configuration.getThreadFactory();
+//        ThreadFactory threadFactory = configuration.getThreadFactory();
         executorService = configuration.getExecutorService();
         scheduledExecutorService = configuration.getScheduledExecutorService();
     }
 
     private void timerAtFixedRate(final E timerEvent, long delay, long period, TimeUnit timeUnit) {
-        ScheduledFuture<?> scheduledFuture = scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
-            @Override
-            public void run() {
-                if (isRunning() && getSnapshot().getCurrentState().isPresent()) {
-                    event(timerEvent);
-                }
+        ScheduledFuture<?> scheduledFuture = scheduledExecutorService.scheduleAtFixedRate(() -> {
+            if (isRunning() && getSnapshot().getCurrentState().isPresent()) {
+                event(timerEvent);
             }
         }, delay, period, timeUnit);
 
@@ -94,12 +92,9 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
     }
 
     private void timerAt(final E timerEvent, long delay, TimeUnit timeUnit) {
-        ScheduledFuture<?> scheduledFuture = scheduledExecutorService.schedule(new Runnable() {
-            @Override
-            public void run() {
-                if (isRunning() && getSnapshot().getCurrentState().isPresent()) {
-                    event(timerEvent);
-                }
+        ScheduledFuture<?> scheduledFuture = scheduledExecutorService.schedule(() -> {
+            if (isRunning() && getSnapshot().getCurrentState().isPresent()) {
+                event(timerEvent);
             }
         }, delay, timeUnit);
 
@@ -148,7 +143,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
     }
 
     private void fire(Object event) {
-        synchronized (context) {
+        synchronized (DUDE) {
             if (ServiceEvent.START == event) {
                 startLatch.countDown();
 
@@ -157,8 +152,6 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
                 if (foundNbrStartStates != 1) {
                     if (foundNbrStartStates == 0) {
                         LOGGER.error("no start-state found");
-                    } else {
-                        LOGGER.error("to many start-states found: " + startStates.get());
                     }
                     triggerShutdown();
                     return;
@@ -168,9 +161,9 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
 
                 executeActionImplied(instanceMap(startStateClass));
                 executeActionOnEnter(instanceMap(startStateClass));
-                context.currentState = Optional.<Class<?>>of(startStateClass);
+                context.currentState = startStateClass;
 
-                for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(context.currentState.get())) {
+                for (TransitionOnTimeoutEvent e : helper.getTimeoutTransitions(context.currentState)) {
                     timerAt((E) e, e.getPeriod(), e.getTimeUnit());
                 }
                 return;
@@ -178,7 +171,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
 
             executeActionImplied(event);
 
-            Class<?> currentStateClass = context.currentState.get();
+            Class<?> currentStateClass = context.currentState;
             Optional<Set<Method>> foundTransitions;
             if (event instanceof TransitionOnTimeoutEvent) {
                 foundTransitions = Optional.<Set<Method>>of(newHashSet(((TransitionOnTimeoutEvent) event).getTimeOutMethod()));
@@ -224,7 +217,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
                 currentStateClass = result.getClass();
 
                 context.previousState = context.currentState;
-                context.currentState = Optional.<Class<?>>of(result.getClass());
+                context.currentState = result.getClass();
             } catch (Exception e) {
                 throw Throwables.propagate(e);
             }
@@ -268,12 +261,9 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
 
     @Override
     public Snapshot getSnapshot() {
-        return new Snapshot() {
-            @Override
-            public Optional<Object> getCurrentState() {
-                synchronized (context) {
-                    return Optional.<Object>fromNullable(context.currentState);
-                }
+        return () -> {
+            synchronized (DUDE) {
+                return Optional.fromNullable(context.currentState);
             }
         };
     }
@@ -361,7 +351,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
     @Override
     protected void triggerShutdown() {
         LOGGER.info("triggerShutdown");
-        queue((E) ServiceEvent.STOP);
+        queue(ServiceEvent.STOP);
     }
 
     @Override
@@ -412,7 +402,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
             return this;
         }
 
-        public Configuration build() {
+        Configuration build() {
             return configuration;
         }
 
@@ -441,7 +431,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
             classLoader = DefaultConfiguration.class.getClassLoader();
         }
 
-        public DefaultConfiguration merge(Configuration configuration) {
+        DefaultConfiguration merge(Configuration configuration) {
             Long actionTimeoutMillis = configuration.getActionTimeoutMillis();
             if (actionTimeoutMillis != null) {
                 setActionTimeoutMills(actionTimeoutMillis);
@@ -482,7 +472,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
             return threadFactory;
         }
 
-        public void setThreadFactory(ThreadFactory threadFactory) {
+        void setThreadFactory(ThreadFactory threadFactory) {
             this.threadFactory = requireNonNull(threadFactory);
         }
 
@@ -491,7 +481,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
             return executorService;
         }
 
-        public void setExecutorService(ExecutorService executorService) {
+        void setExecutorService(ExecutorService executorService) {
             this.executorService = requireNonNull(executorService);
         }
 
@@ -500,7 +490,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
             return scheduledExecutorService;
         }
 
-        public void setScheduledExecutorService(ScheduledExecutorService scheduledExecutorService) {
+        void setScheduledExecutorService(ScheduledExecutorService scheduledExecutorService) {
             this.scheduledExecutorService = requireNonNull(scheduledExecutorService);
         }
 
@@ -509,7 +499,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
             return queueSize;
         }
 
-        public void setQueueSize(int queueSize) {
+        void setQueueSize(int queueSize) {
             this.queueSize = (int) assertPositiveNotZero(queueSize);
         }
 
@@ -528,15 +518,15 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
             return classLoader;
         }
 
-        public void setClassLoader(ClassLoader classLoader) {
+        void setClassLoader(ClassLoader classLoader) {
             this.classLoader = Objects.requireNonNull(classLoader);
         }
 
-        public void setActionTimeoutMills(long actionTimeoutMills) {
+        void setActionTimeoutMills(long actionTimeoutMills) {
             this.actionTimeoutMills = assertPositiveNotZero(actionTimeoutMills);
         }
 
-        public void setTransitionTimeoutMills(long transitionTimeoutMills) {
+        void setTransitionTimeoutMills(long transitionTimeoutMills) {
             this.transitionTimeoutMills = assertPositiveNotZero(transitionTimeoutMills);
         }
 
@@ -552,7 +542,7 @@ public class DefaultEngine<F, E> extends AbstractExecutionThreadService implemen
      *
      */
     private class DefaultContext implements Context {
-        private Optional<Class<?>> currentState = Optional.absent();
-        private Optional<Class<?>> previousState = Optional.absent();
+        private Class<?> currentState = null;
+        private Class<?> previousState = null;
     }
 }
